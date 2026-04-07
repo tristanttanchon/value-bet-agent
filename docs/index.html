@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Value Bet Agent</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', sans-serif; background: #0f1117; color: #e0e0e0; min-height: 100vh; }
+
+    .header {
+      background: linear-gradient(135deg, #1a1d2e, #16213e);
+      padding: 20px 24px;
+      border-bottom: 1px solid #2a2d3e;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .header h1 { font-size: 1.3rem; color: #fff; }
+    .header .date { font-size: 0.8rem; color: #888; }
+    .refresh-btn {
+      background: #2a2d3e;
+      border: none;
+      color: #aaa;
+      padding: 8px 14px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+    .refresh-btn:hover { background: #3a3d5e; color: #fff; }
+
+    .container { max-width: 1200px; margin: 0 auto; padding: 20px 16px; }
+
+    /* KPIs */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    @media(min-width: 600px) { .kpi-grid { grid-template-columns: repeat(3, 1fr); } }
+    @media(min-width: 900px) { .kpi-grid { grid-template-columns: repeat(6, 1fr); } }
+
+    .kpi {
+      background: #1a1d2e;
+      border-radius: 12px;
+      padding: 16px;
+      border: 1px solid #2a2d3e;
+    }
+    .kpi h3 { font-size: 0.7rem; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+    .kpi .val { font-size: 1.6rem; font-weight: bold; line-height: 1; }
+    .kpi .sub { font-size: 0.75rem; color: #666; margin-top: 4px; }
+    .green { color: #2ecc71; }
+    .red { color: #e74c3c; }
+    .orange { color: #f39c12; }
+    .blue { color: #3498db; }
+
+    /* Chart */
+    .card {
+      background: #1a1d2e;
+      border-radius: 12px;
+      padding: 20px;
+      border: 1px solid #2a2d3e;
+      margin-bottom: 20px;
+    }
+    .card h2 { font-size: 0.95rem; color: #ccc; margin-bottom: 16px; }
+
+    /* Tables */
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th { text-align: left; padding: 8px 10px; font-size: 0.72rem; color: #666; text-transform: uppercase; border-bottom: 1px solid #2a2d3e; white-space: nowrap; }
+    td { padding: 9px 10px; border-bottom: 1px solid #1f2235; white-space: nowrap; }
+    tr:hover td { background: #1f2235; }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: bold;
+    }
+    .badge-win { background: rgba(46,204,113,0.15); color: #2ecc71; }
+    .badge-loss { background: rgba(231,76,60,0.15); color: #e74c3c; }
+    .badge-pending { background: rgba(243,156,18,0.15); color: #f39c12; }
+
+    /* Two columns */
+    .two-col { display: grid; grid-template-columns: 1fr; gap: 20px; margin-bottom: 20px; }
+    @media(min-width: 900px) { .two-col { grid-template-columns: 1fr 1fr; } }
+
+    /* Loading */
+    .loading { text-align: center; color: #888; padding: 40px; }
+    .spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid #2a2d3e; border-top-color: #3498db; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 8px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .empty { text-align: center; color: #555; padding: 24px; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>⚽ Value Bet Agent</h1>
+    <div class="date" id="update-date">Chargement...</div>
+  </div>
+  <button class="refresh-btn" onclick="loadAll()">↻ Actualiser</button>
+</div>
+
+<div class="container">
+
+  <!-- KPIs -->
+  <div class="kpi-grid" id="kpis">
+    <div class="loading"><div class="spinner"></div></div>
+  </div>
+
+  <!-- Graphique bankroll -->
+  <div class="card">
+    <h2>📈 Évolution du bankroll</h2>
+    <canvas id="chart" height="100"></canvas>
+  </div>
+
+  <!-- Stats par compétition + marché -->
+  <div class="two-col">
+    <div class="card">
+      <h2>🏆 Par compétition</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Compétition</th><th>Paris</th><th>W/L</th><th>Yield</th><th>P&L</th></tr></thead>
+          <tbody id="comp-rows"><tr><td colspan="5" class="empty">Chargement...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h2>🎯 Par marché</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Marché</th><th>Paris</th><th>W/L</th><th>Yield</th><th>P&L</th></tr></thead>
+          <tbody id="market-rows"><tr><td colspan="5" class="empty">Chargement...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Derniers paris -->
+  <div class="card">
+    <h2>📋 Derniers paris</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Date</th><th>Match</th><th>Marché</th><th>Cote</th><th>Edge</th><th>Mise</th><th>Statut</th><th>P&L</th></tr></thead>
+        <tbody id="bets-rows"><tr><td colspan="8" class="empty">Chargement...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const SUPABASE_URL = 'https://hltoumodbdpxqespjcsb.supabase.co';
+  const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhsdG91bW9kYmRweHFlc3BqY3NiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU1NTU5MTksImV4cCI6MjA5MTEzMTkxOX0.BbS0Xi0--BZjk823TrmSHXIQSWljNhWvAe3Zs-TQM-E';
+  const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+  let chartInstance = null;
+
+  async function loadAll() {
+    document.getElementById('update-date').textContent = 'Actualisation...';
+    try {
+      const [bankrollRes, betsRes] = await Promise.all([
+        sb.from('bankroll').select('*').eq('id', 1).single(),
+        sb.from('bets').select('*').order('date', { ascending: false }).limit(100),
+      ]);
+
+      const bankroll = bankrollRes.data;
+      const bets = betsRes.data || [];
+
+      renderKPIs(bankroll, bets);
+      renderChart(bankroll, bets);
+      renderCompStats(bets);
+      renderMarketStats(bets);
+      renderBets(bets);
+
+      document.getElementById('update-date').textContent =
+        'Mis à jour le ' + new Date().toLocaleDateString('fr-FR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' });
+    } catch(e) {
+      console.error(e);
+      document.getElementById('update-date').textContent = 'Erreur de chargement';
+    }
+  }
+
+  function renderKPIs(b, bets) {
+    const pl = b.current - b.initial;
+    const roi = b.initial ? (pl / b.initial * 100) : 0;
+    const resolved = bets.filter(x => x.status === 'WIN' || x.status === 'LOSS');
+    const wins = resolved.filter(x => x.status === 'WIN').length;
+    const wr = resolved.length ? (wins / resolved.length * 100) : 0;
+    const totalStaked = resolved.reduce((s, x) => s + parseFloat(x.sim_stake || 0), 0);
+    const totalPL = resolved.reduce((s, x) => s + parseFloat(x.profit_loss || 0), 0);
+    const yieldPct = totalStaked ? (totalPL / totalStaked * 100) : 0;
+
+    document.getElementById('kpis').innerHTML = `
+      <div class="kpi">
+        <h3>Bankroll</h3>
+        <div class="val blue">${b.current.toFixed(2)}€</div>
+        <div class="sub">Initial : ${b.initial.toFixed(2)}€</div>
+      </div>
+      <div class="kpi">
+        <h3>P&L total</h3>
+        <div class="val ${pl >= 0 ? 'green' : 'red'}">${pl >= 0 ? '+' : ''}${pl.toFixed(2)}€</div>
+        <div class="sub">ROI : ${roi >= 0 ? '+' : ''}${roi.toFixed(1)}%</div>
+      </div>
+      <div class="kpi">
+        <h3>Yield</h3>
+        <div class="val ${yieldPct >= 0 ? 'green' : 'red'}">${yieldPct >= 0 ? '+' : ''}${yieldPct.toFixed(1)}%</div>
+        <div class="sub">Sur ${resolved.length} paris</div>
+      </div>
+      <div class="kpi">
+        <h3>Win rate</h3>
+        <div class="val">${wr.toFixed(1)}%</div>
+        <div class="sub">${wins}W / ${resolved.length - wins}L</div>
+      </div>
+      <div class="kpi">
+        <h3>En attente</h3>
+        <div class="val orange">${b.pending}</div>
+        <div class="sub">Total : ${b.total_bets}</div>
+      </div>
+      <div class="kpi">
+        <h3>Total misé</h3>
+        <div class="val">${totalStaked.toFixed(2)}€</div>
+        <div class="sub">Récupéré : ${(totalStaked + totalPL).toFixed(2)}€</div>
+      </div>
+    `;
+  }
+
+  function renderChart(b, bets) {
+    const resolved = bets
+      .filter(x => (x.status === 'WIN' || x.status === 'LOSS') && x.profit_loss != null)
+      .sort((a, b) => a.date > b.date ? 1 : -1);
+
+    let current = b.initial;
+    const labels = [];
+    const data = [];
+
+    for (const bet of resolved) {
+      current = Math.round((current + parseFloat(bet.profit_loss)) * 100) / 100;
+      labels.push(bet.date);
+      data.push(current);
+    }
+
+    if (labels.length === 0) {
+      labels.push('Aujourd\'hui');
+      data.push(b.current);
+    }
+
+    const ctx = document.getElementById('chart').getContext('2d');
+    if (chartInstance) chartInstance.destroy();
+
+    chartInstance = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Bankroll',
+            data,
+            borderColor: '#3498db',
+            backgroundColor: 'rgba(52,152,219,0.1)',
+            borderWidth: 2,
+            fill: true,
+            tension: 0.4,
+            pointRadius: data.length < 20 ? 4 : 2,
+          },
+          {
+            label: 'Mise de départ',
+            data: Array(labels.length).fill(b.initial),
+            borderColor: '#555',
+            borderDash: [5, 5],
+            borderWidth: 1,
+            pointRadius: 0,
+            fill: false,
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { labels: { color: '#aaa', font: { size: 12 } } },
+          tooltip: { mode: 'index' }
+        },
+        scales: {
+          x: { ticks: { color: '#666', maxTicksLimit: 8 }, grid: { color: '#2a2d3e' } },
+          y: { ticks: { color: '#666', callback: v => v + '€' }, grid: { color: '#2a2d3e' } }
+        }
+      }
+    });
+  }
+
+  function groupBy(bets, key) {
+    const groups = {};
+    for (const b of bets) {
+      if (b.status !== 'WIN' && b.status !== 'LOSS') continue;
+      const k = b[key] || 'Inconnu';
+      if (!groups[k]) groups[k] = { total: 0, wins: 0, losses: 0, staked: 0, pl: 0 };
+      const g = groups[k];
+      g.total++;
+      const stake = parseFloat(b.sim_stake || 0);
+      g.staked += stake;
+      if (b.status === 'WIN') { g.wins++; g.pl += parseFloat(b.profit_loss || 0); }
+      else { g.losses++; g.pl += parseFloat(b.profit_loss || 0); }
+    }
+    return Object.entries(groups)
+      .map(([name, g]) => ({
+        name,
+        ...g,
+        yield: g.staked ? (g.pl / g.staked * 100) : 0
+      }))
+      .sort((a, b) => b.yield - a.yield);
+  }
+
+  function renderCompStats(bets) {
+    const groups = groupBy(bets, 'competition');
+    const tbody = document.getElementById('comp-rows');
+    if (!groups.length) { tbody.innerHTML = '<tr><td colspan="5" class="empty">Aucune donnée</td></tr>'; return; }
+    tbody.innerHTML = groups.slice(0, 10).map(g => `
+      <tr>
+        <td>${g.name}</td>
+        <td>${g.total}</td>
+        <td>${g.wins}W / ${g.losses}L</td>
+        <td class="${g.yield >= 0 ? 'green' : 'red'}">${g.yield >= 0 ? '+' : ''}${g.yield.toFixed(1)}%</td>
+        <td class="${g.pl >= 0 ? 'green' : 'red'}">${g.pl >= 0 ? '+' : ''}${g.pl.toFixed(2)}€</td>
+      </tr>`).join('');
+  }
+
+  function renderMarketStats(bets) {
+    const groups = groupBy(bets, 'market');
+    const tbody = document.getElementById('market-rows');
+    if (!groups.length) { tbody.innerHTML = '<tr><td colspan="5" class="empty">Aucune donnée</td></tr>'; return; }
+    tbody.innerHTML = groups.map(g => `
+      <tr>
+        <td>${g.name}</td>
+        <td>${g.total}</td>
+        <td>${g.wins}W / ${g.losses}L</td>
+        <td class="${g.yield >= 0 ? 'green' : 'red'}">${g.yield >= 0 ? '+' : ''}${g.yield.toFixed(1)}%</td>
+        <td class="${g.pl >= 0 ? 'green' : 'red'}">${g.pl >= 0 ? '+' : ''}${g.pl.toFixed(2)}€</td>
+      </tr>`).join('');
+  }
+
+  function renderBets(bets) {
+    const tbody = document.getElementById('bets-rows');
+    if (!bets.length) { tbody.innerHTML = '<tr><td colspan="8" class="empty">Aucun pari enregistré</td></tr>'; return; }
+    tbody.innerHTML = bets.slice(0, 30).map(b => {
+      const badgeClass = { WIN: 'badge-win', LOSS: 'badge-loss', PENDING: 'badge-pending' }[b.status] || '';
+      const pl = b.profit_loss != null ? `${parseFloat(b.profit_loss) >= 0 ? '+' : ''}${parseFloat(b.profit_loss).toFixed(2)}€` : '—';
+      const plClass = b.profit_loss != null ? (parseFloat(b.profit_loss) >= 0 ? 'green' : 'red') : '';
+      return `
+        <tr>
+          <td>${b.date}</td>
+          <td>${b.match}</td>
+          <td>${b.market}</td>
+          <td>${b.market_odds}</td>
+          <td>${b.edge || '—'}</td>
+          <td>${parseFloat(b.sim_stake || 0).toFixed(2)}€</td>
+          <td><span class="badge ${badgeClass}">${b.status}</span></td>
+          <td class="${plClass}">${pl}</td>
+        </tr>`;
+    }).join('');
+  }
+
+  loadAll();
+</script>
+</body>
+</html>
