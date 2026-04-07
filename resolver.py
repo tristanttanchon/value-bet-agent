@@ -7,6 +7,7 @@ from datetime import date
 import config
 from modules.db import get_client
 from modules.simulation import load_bankroll, save_bankroll
+from modules.telegram_reporter import send_message
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -160,6 +161,17 @@ def resolve_pending_bets(results: dict) -> tuple[int, int, int]:
             "profit_loss": profit,
             "bankroll_after": bankroll["current"],
         }).eq("id", row["id"]).execute()
+
+        # Notification Telegram WIN/LOSS
+        if config.TELEGRAM_BOT_TOKEN:
+            emoji = "✅" if outcome == "WIN" else ("↩️" if outcome == "PUSH" else "❌")
+            pl_str = f"{profit:+.2f}€" if outcome != "PUSH" else "Remboursé"
+            send_message(
+                f"{emoji} *{outcome}* — {row['match']}\n"
+                f"Marché : `{row['market']}` @ `{row['market_odds']}`\n"
+                f"Score : {result['home_score']}-{result['away_score']}  |  P&L : *{pl_str}*\n"
+                f"Bankroll : *{bankroll['current']:.2f}€*"
+            )
 
         resolved += 1
 
