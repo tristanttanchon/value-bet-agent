@@ -3,6 +3,7 @@ Fetcher — récupère les matchs du jour et les meilleures cotes via The Odds A
 """
 
 import requests
+import time
 from datetime import datetime, timezone
 import config
 
@@ -32,6 +33,10 @@ def get_todays_matches() -> list[dict]:
                 return []
             if resp.status_code == 422:
                 # Compétition non disponible dans le plan
+                continue
+            if resp.status_code == 429:
+                print(f"[Fetcher] {sport_key} → HTTP 429 (rate limit), pause 2s...")
+                time.sleep(2)
                 continue
             if resp.status_code != 200:
                 print(f"[Fetcher] {sport_key} → HTTP {resp.status_code}")

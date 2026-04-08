@@ -228,12 +228,12 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
             break
         except Exception as e:
             err = str(e)
-            if "429" in err or "RESOURCE_EXHAUSTED" in err:
+            if "429" in err or "RESOURCE_EXHAUSTED" in err or "503" in err or "UNAVAILABLE" in err:
                 wait = 30 * (attempt + 1)
-                print(f"[Analyser] Quota dépassé, nouvelle tentative dans {wait}s... ({attempt+1}/{max_retries})")
+                print(f"[Analyser] Serveur indisponible/quota, nouvelle tentative dans {wait}s... ({attempt+1}/{max_retries})")
                 time.sleep(wait)
                 if attempt == max_retries - 1:
-                    print("[Analyser] Quota épuisé après plusieurs tentatives.")
+                    print("[Analyser] Échec après plusieurs tentatives.")
                     raise
             else:
                 print(f"[Analyser] Erreur API Gemini : {e}")
