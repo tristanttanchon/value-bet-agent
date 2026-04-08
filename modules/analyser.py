@@ -210,14 +210,14 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
     client = genai.Client(api_key=config.GEMINI_API_KEY)
     prompt = build_prompt(matches_text)
 
-    print("[Analyser] Appel Gemini 2.0 Flash (Google Search activé)...")
+    print("[Analyser] Appel Gemini 2.5 Flash (Google Search activé)...")
 
     import time
     max_retries = 3
     for attempt in range(max_retries):
         try:
             response = client.models.generate_content(
-                model="gemini-2.0-flash",
+                model="gemini-2.5-flash",
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     tools=[types.Tool(google_search=types.GoogleSearch())],
