@@ -241,16 +241,28 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
 
     # Gemini 2.5 Flash a un mode "thinking" — le texte peut être dans les parts
     full_text = ""
+
+    # Tentative 1 : accès direct response.text
     try:
         if response.text:
             full_text = response.text
-        elif response.candidates:
-            for candidate in response.candidates:
-                for part in candidate.content.parts:
+    except Exception:
+        pass
+
+    # Tentative 2 : parcours des candidates/parts (mode thinking)
+    if not full_text:
+        try:
+            for candidate in (response.candidates or []):
+                if not candidate or not candidate.content:
+                    continue
+                for part in (candidate.content.parts or []):
                     if hasattr(part, "text") and part.text:
+                        # Ignorer les parts "thinking" (pensées internes du modèle)
+                        if hasattr(part, "thought") and part.thought:
+                            continue
                         full_text += part.text
-    except Exception as e:
-        print(f"[Analyser] Avertissement extraction texte : {e}")
+        except Exception as e:
+            print(f"[Analyser] Avertissement extraction texte : {e}")
 
     print(f"[Analyser] Réponse reçue ({len(full_text)} caractères).")
     bets = extract_json_block(full_text)
