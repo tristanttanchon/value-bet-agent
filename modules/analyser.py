@@ -239,7 +239,20 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
                 print(f"[Analyser] Erreur API Gemini : {e}")
                 raise
 
-    full_text = response.text or ""
+    # Gemini 2.5 Flash a un mode "thinking" — le texte peut être dans les parts
+    full_text = ""
+    try:
+        if response.text:
+            full_text = response.text
+        elif response.candidates:
+            for candidate in response.candidates:
+                for part in candidate.content.parts:
+                    if hasattr(part, "text") and part.text:
+                        full_text += part.text
+    except Exception as e:
+        print(f"[Analyser] Avertissement extraction texte : {e}")
+
+    print(f"[Analyser] Réponse reçue ({len(full_text)} caractères).")
     bets = extract_json_block(full_text)
     print(f"[Analyser] {len(bets)} pari(s) extrait(s) du JSON.")
     return full_text, bets
