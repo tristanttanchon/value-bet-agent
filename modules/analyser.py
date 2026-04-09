@@ -212,13 +212,14 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
 
     import time
 
-    # Ordre de fallback : 2.5 Flash (meilleur) → 1.5 Flash (plus stable)
-    models_to_try = ["gemini-2.5-flash", "gemini-1.5-flash"]
+    # gemini-1.5-flash : stable, 1500 req/jour, pas de mode thinking
+    # gemini-2.0-flash : fallback secondaire
+    models_to_try = ["gemini-1.5-flash", "gemini-2.0-flash-latest"]
     response = None
 
     for model_name in models_to_try:
         print(f"[Analyser] Appel {model_name} (Google Search activé)...")
-        max_retries = 2
+        max_retries = 3
         success = False
         for attempt in range(max_retries):
             try:
@@ -238,11 +239,11 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
                 err = str(e)
                 if "429" in err or "RESOURCE_EXHAUSTED" in err or "503" in err or "UNAVAILABLE" in err:
                     if attempt < max_retries - 1:
-                        wait = 20
-                        print(f"[Analyser] {model_name} indisponible, retry dans {wait}s...")
+                        wait = 20 * (attempt + 1)
+                        print(f"[Analyser] {model_name} indisponible, retry dans {wait}s... ({attempt+1}/{max_retries})")
                         time.sleep(wait)
                     else:
-                        print(f"[Analyser] {model_name} indisponible après {max_retries} tentatives, fallback...")
+                        print(f"[Analyser] {model_name} échec, essai modèle suivant...")
                 else:
                     print(f"[Analyser] Erreur API Gemini ({model_name}) : {e}")
                     raise
