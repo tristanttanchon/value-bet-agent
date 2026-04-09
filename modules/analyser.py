@@ -210,34 +210,47 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
     client = genai.Client(api_key=config.GEMINI_API_KEY)
     prompt = build_prompt(matches_text)
 
-    print("[Analyser] Appel Gemini 2.5 Flash (Google Search activé)...")
-
     import time
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    tools=[types.Tool(google_search=types.GoogleSearch())],
-                    temperature=0.3,
-                    max_output_tokens=8192,
-                ),
-            )
-            break
-        except Exception as e:
-            err = str(e)
-            if "429" in err or "RESOURCE_EXHAUSTED" in err or "503" in err or "UNAVAILABLE" in err:
-                wait = 30 * (attempt + 1)
-                print(f"[Analyser] Serveur indisponible/quota, nouvelle tentative dans {wait}s... ({attempt+1}/{max_retries})")
-                time.sleep(wait)
-                if attempt == max_retries - 1:
-                    print("[Analyser] Échec après plusieurs tentatives.")
+
+    # Ordre de fallback : 2.5 Flash (meilleur) → 1.5 Flash (plus stable)
+    models_to_try = ["gemini-2.5-flash", "gemini-1.5-flash"]
+    response = None
+
+    for model_name in models_to_try:
+        print(f"[Analyser] Appel {model_name} (Google Search activé)...")
+        max_retries = 2
+        success = False
+        for attempt in range(max_retries):
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        tools=[types.Tool(google_search=types.GoogleSearch())],
+                        temperature=0.3,
+                        max_output_tokens=8192,
+                    ),
+                )
+                print(f"[Analyser] Modèle utilisé : {model_name}")
+                success = True
+                break
+            except Exception as e:
+                err = str(e)
+                if "429" in err or "RESOURCE_EXHAUSTED" in err or "503" in err or "UNAVAILABLE" in err:
+                    if attempt < max_retries - 1:
+                        wait = 20
+                        print(f"[Analyser] {model_name} indisponible, retry dans {wait}s...")
+                        time.sleep(wait)
+                    else:
+                        print(f"[Analyser] {model_name} indisponible après {max_retries} tentatives, fallback...")
+                else:
+                    print(f"[Analyser] Erreur API Gemini ({model_name}) : {e}")
                     raise
-            else:
-                print(f"[Analyser] Erreur API Gemini : {e}")
-                raise
+        if success:
+            break
+
+    if response is None:
+        raise RuntimeError("[Analyser] Tous les modèles Gemini sont indisponibles.")
 
     # Gemini 2.5 Flash a un mode "thinking" — le texte peut être dans les parts
     full_text = ""
