@@ -29,7 +29,15 @@ def run_analysis() -> None:
 
     print("\n⚽  VALUE BET AGENT — Démarrage de l'analyse...\n")
 
-    # ── 0. Vérification bankroll guard ─────────────────────────────────────
+    # ── 0. Test Telegram + Vérification bankroll guard ──────────────────────
+    if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID:
+        from modules.telegram_reporter import send_message
+        ok = send_message("⚽ Analyse Value Bet démarrée...")
+        if not ok:
+            print("[Main] ⚠️  Telegram non joignable — vérifiez BOT_TOKEN et CHAT_ID")
+    else:
+        print("[Main] ⚠️  TELEGRAM_BOT_TOKEN ou TELEGRAM_CHAT_ID manquant dans les secrets")
+
     bankroll = load_bankroll()
     alert_msg = check_and_alert(bankroll)
     if alert_msg and config.TELEGRAM_BOT_TOKEN:
@@ -69,6 +77,9 @@ def run_analysis() -> None:
 
     if not full_analysis:
         print("  → Erreur : aucune réponse. Vérifiez votre clé GEMINI_API_KEY.")
+        if config.TELEGRAM_BOT_TOKEN:
+            from modules.telegram_reporter import send_message
+            send_message("❌ Erreur analyse : Gemini n'a pas répondu. Vérifiez GEMINI_API_KEY.")
         return
 
     print(f"  → Analyse reçue. {len(raw_bets)} pari(s) brut(s) identifié(s).")
