@@ -136,11 +136,12 @@ Données manquantes globales.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-ÉTAPE 7 — SORTIE JSON STRUCTURÉE (OBLIGATOIRE)
+ÉTAPE 7 — SORTIE JSON STRUCTURÉE (OBLIGATOIRE — À PLACER EN TOUT DÉBUT DE RÉPONSE)
 
-⚠️ RÈGLE CRITIQUE : La TOUTE DERNIÈRE chose que tu écris doit être un bloc
-JSON valide entre des balises de code. Même si aucun pari n'est recommandé,
-tu DOIS générer ce bloc avec un tableau vide. Ne jamais omettre ce bloc.
+⚠️ RÈGLE CRITIQUE : La TOUTE PREMIÈRE chose que tu écris, AVANT MÊME le rapport
+détaillé, doit être ce bloc JSON valide. Ceci garantit qu'il ne sera jamais tronqué.
+Même si aucun pari n'est recommandé, génère ce bloc avec un tableau vide.
+Puis, APRÈS le bloc JSON, rédige le rapport détaillé par match.
 
 Format exact à respecter (commence par ```json et finit par ```) :
 
@@ -280,7 +281,7 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
                 gen_config_kwargs = {
                     "tools": [types.Tool(google_search=types.GoogleSearch())],
                     "temperature": 0.3,
-                    "max_output_tokens": 8192,
+                    "max_output_tokens": 32768,
                 }
 
                 # Désactive le mode "thinking" pour gemini-2.5-flash
@@ -315,6 +316,19 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
 
     if response is None:
         raise RuntimeError("[Analyser] Tous les modèles Gemini sont indisponibles.")
+
+    # Log du finish_reason pour debug (MAX_TOKENS, STOP, SAFETY, etc.)
+    try:
+        for i, candidate in enumerate(response.candidates or []):
+            fr = getattr(candidate, "finish_reason", None)
+            print(f"[Analyser] Candidate {i} finish_reason : {fr}")
+        usage = getattr(response, "usage_metadata", None)
+        if usage:
+            print(f"[Analyser] Tokens : prompt={getattr(usage, 'prompt_token_count', '?')}, "
+                  f"output={getattr(usage, 'candidates_token_count', '?')}, "
+                  f"total={getattr(usage, 'total_token_count', '?')}")
+    except Exception as e:
+        print(f"[Analyser] Debug finish_reason erreur : {e}")
 
     # Gemini 2.5 Flash a un mode "thinking" — le texte peut être dans les parts
     full_text = ""
