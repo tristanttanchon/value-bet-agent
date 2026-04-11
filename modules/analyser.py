@@ -138,8 +138,11 @@ Données manquantes globales.
 
 ÉTAPE 7 — SORTIE JSON STRUCTURÉE (OBLIGATOIRE)
 
-Après le rapport complet, génère OBLIGATOIREMENT un bloc JSON entre les
-balises ```json ... ``` avec exactement ce format (respecte les types) :
+⚠️ RÈGLE CRITIQUE : La TOUTE DERNIÈRE chose que tu écris doit être un bloc
+JSON valide entre des balises de code. Même si aucun pari n'est recommandé,
+tu DOIS générer ce bloc avec un tableau vide. Ne jamais omettre ce bloc.
+
+Format exact à respecter (commence par ```json et finit par ```) :
 
 ```json
 {
@@ -189,17 +192,67 @@ def build_prompt(matches_text: str) -> str:
 
 
 def extract_json_block(text: str) -> list[dict]:
-    """Extrait le bloc JSON structuré de la réponse."""
-    match = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if not match:
-        print("[Analyser] Avertissement : aucun bloc JSON trouvé dans la réponse.")
-        return []
-    try:
-        data = json.loads(match.group(1))
-        return data.get("recommended_bets", [])
-    except json.JSONDecodeError as e:
-        print(f"[Analyser] Erreur JSON : {e}")
-        return []
+    """
+    Extrait le bloc JSON structuré de la réponse.
+    Tente plusieurs formats : ```json ... ```, ``` ... ```, puis brace-matching.
+    """
+    # Pattern 1 : ```json { ... } ```
+    patterns = [
+        r"```json\s*(\{.*?\})\s*```",
+        r"```JSON\s*(\{.*?\})\s*```",
+        r"```\s*(\{.*?\})\s*```",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.DOTALL)
+        if match:
+            try:
+                data = json.loads(match.group(1))
+                return data.get("recommended_bets", [])
+            except json.JSONDecodeError:
+                continue
+
+    # Pattern 2 : recherche du dernier objet JSON contenant "recommended_bets"
+    idx = text.rfind('"recommended_bets"')
+    if idx != -1:
+        # Remonte au { d'ouverture
+        start = text.rfind('{', 0, idx)
+        if start != -1:
+            # Trouve le } fermant correspondant (brace matching)
+            depth = 0
+            in_string = False
+            escape = False
+            end = -1
+            for i in range(start, len(text)):
+                c = text[i]
+                if escape:
+                    escape = False
+                    continue
+                if c == '\\':
+                    escape = True
+                    continue
+                if c == '"':
+                    in_string = not in_string
+                    continue
+                if in_string:
+                    continue
+                if c == '{':
+                    depth += 1
+                elif c == '}':
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+            if end > start:
+                try:
+                    data = json.loads(text[start:end])
+                    return data.get("recommended_bets", [])
+                except json.JSONDecodeError as e:
+                    print(f"[Analyser] Erreur JSON (brace matching) : {e}")
+
+    print("[Analyser] Avertissement : aucun bloc JSON trouvé dans la réponse.")
+    # Debug : afficher les 500 derniers caractères pour comprendre le format
+    print(f"[Analyser] Fin de la réponse (debug) :\n---\n{text[-500:]}\n---")
+    return []
 
 
 def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
