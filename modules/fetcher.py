@@ -12,15 +12,27 @@ def get_todays_matches() -> list[dict]:
     """
     Retourne la liste des matchs programmés aujourd'hui avec leurs meilleures cotes.
     Format : [{ match, home, away, competition, kickoff, date, odds: {1, X, 2} }]
+
+    Supporte la rotation automatique de plusieurs clés API : si la clé active
+    est épuisée (401/OUT_OF_USAGE_CREDITS), bascule sur la suivante.
     """
     today = datetime.now(timezone.utc).date().isoformat()
     matches = []
+
+    # Pool de clés API avec rotation
+    keys = list(config.ODDS_API_KEYS) if config.ODDS_API_KEYS else ([config.ODDS_API_KEY] if config.ODDS_API_KEY else [])
+    if not keys:
+        print("[Fetcher] Aucune clé ODDS_API_KEY configurée.")
+        return []
+
+    current_key_index = 0
+    print(f"[Fetcher] {len(keys)} clé(s) API disponible(s).")
 
     for sport_key in config.COMPETITION_KEYS:
         try:
             url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/"
             params = {
-                "apiKey": config.ODDS_API_KEY,
+                "apiKey": keys[current_key_index],
                 "regions": "eu",
                 "markets": "h2h",
                 "oddsFormat": "decimal",
@@ -28,9 +40,22 @@ def get_todays_matches() -> list[dict]:
             }
             resp = requests.get(url, params=params, timeout=10)
 
+            # Clé épuisée ou invalide → rotation
             if resp.status_code == 401:
-                print("[Fetcher] Clé API The Odds API invalide.")
-                return []
+                print(f"[Fetcher] Clé #{current_key_index+1} épuisée/invalide.")
+                if current_key_index + 1 < len(keys):
+                    current_key_index += 1
+                    print(f"[Fetcher] Rotation vers clé #{current_key_index+1}...")
+                    # Retry immédiat avec la nouvelle clé
+                    params["apiKey"] = keys[current_key_index]
+                    resp = requests.get(url, params=params, timeout=10)
+                    if resp.status_code == 401:
+                        print(f"[Fetcher] Clé #{current_key_index+1} aussi épuisée. Arrêt.")
+                        return matches
+                else:
+                    print("[Fetcher] Toutes les clés sont épuisées.")
+                    return matches
+
             if resp.status_code == 422:
                 # Compétition non disponible dans le plan
                 continue

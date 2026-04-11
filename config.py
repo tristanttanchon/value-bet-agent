@@ -13,7 +13,12 @@ BETS_LOG_FILE = DATA_DIR / "bets_log.csv"
 
 # API Keys
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-ODDS_API_KEY = os.getenv("ODDS_API_KEY")
+
+# Supporte plusieurs clés Odds API séparées par virgule (rotation auto)
+_odds_raw = os.getenv("ODDS_API_KEY", "")
+ODDS_API_KEYS = [k.strip() for k in _odds_raw.split(",") if k.strip()]
+ODDS_API_KEY = ODDS_API_KEYS[0] if ODDS_API_KEYS else None
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY")
