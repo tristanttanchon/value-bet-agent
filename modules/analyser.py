@@ -136,12 +136,14 @@ Données manquantes globales.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-ÉTAPE 7 — SORTIE JSON STRUCTURÉE (OBLIGATOIRE — À PLACER EN TOUT DÉBUT DE RÉPONSE)
+ÉTAPE 7 — SORTIE JSON STRUCTURÉE (OBLIGATOIRE)
 
-⚠️ RÈGLE CRITIQUE : La TOUTE PREMIÈRE chose que tu écris, AVANT MÊME le rapport
-détaillé, doit être ce bloc JSON valide. Ceci garantit qu'il ne sera jamais tronqué.
-Même si aucun pari n'est recommandé, génère ce bloc avec un tableau vide.
-Puis, APRÈS le bloc JSON, rédige le rapport détaillé par match.
+Tu dois IMPÉRATIVEMENT analyser TOUS les matchs de la liste en détail avec les
+étapes 2 à 6 ci-dessus, puis, à la TOUTE FIN de ta réponse, générer un bloc JSON
+valide résumant les paris recommandés.
+
+⚠️ NE JAMAIS commencer par le bloc JSON. L'analyse détaillée passe d'abord,
+puis le JSON vient en conclusion. Si tu omets ce JSON final, le système échoue.
 
 Format exact à respecter (commence par ```json et finit par ```) :
 
