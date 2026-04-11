@@ -212,34 +212,44 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
 
     import time
 
-    # gemini-1.5-flash : stable, 1500 req/jour, pas de mode thinking
-    # gemini-2.0-flash : fallback secondaire
-    models_to_try = ["gemini-1.5-flash", "gemini-2.0-flash-latest"]
+    # gemini-2.5-flash avec thinking_budget=0 (pas de thinking mode)
+    # Fallback : gemini-flash-latest et gemini-2.0-flash
+    models_to_try = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash"]
     response = None
 
     for model_name in models_to_try:
         print(f"[Analyser] Appel {model_name} (Google Search activé)...")
-        max_retries = 3
+        max_retries = 2
         success = False
         for attempt in range(max_retries):
             try:
+                # Config de base commune
+                gen_config_kwargs = {
+                    "tools": [types.Tool(google_search=types.GoogleSearch())],
+                    "temperature": 0.3,
+                    "max_output_tokens": 8192,
+                }
+
+                # Désactive le mode "thinking" pour gemini-2.5-flash
+                if "2.5" in model_name:
+                    try:
+                        gen_config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+                    except Exception:
+                        pass
+
                 response = client.models.generate_content(
                     model=model_name,
                     contents=prompt,
-                    config=types.GenerateContentConfig(
-                        tools=[types.Tool(google_search=types.GoogleSearch())],
-                        temperature=0.3,
-                        max_output_tokens=8192,
-                    ),
+                    config=types.GenerateContentConfig(**gen_config_kwargs),
                 )
                 print(f"[Analyser] Modèle utilisé : {model_name}")
                 success = True
                 break
             except Exception as e:
                 err = str(e)
-                if "429" in err or "RESOURCE_EXHAUSTED" in err or "503" in err or "UNAVAILABLE" in err:
+                if "429" in err or "RESOURCE_EXHAUSTED" in err or "503" in err or "UNAVAILABLE" in err or "404" in err or "NOT_FOUND" in err:
                     if attempt < max_retries - 1:
-                        wait = 20 * (attempt + 1)
+                        wait = 15
                         print(f"[Analyser] {model_name} indisponible, retry dans {wait}s... ({attempt+1}/{max_retries})")
                         time.sleep(wait)
                     else:
