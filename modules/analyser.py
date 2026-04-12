@@ -286,80 +286,107 @@ def extract_json_block(text: str) -> list[dict]:
 def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
     """
     Envoie les matchs à Gemini 2.0 Flash via l'API avec Google Search activé.
+    Supporte la rotation multi-clés Gemini (séparées par virgule dans le secret).
     Retourne (texte_complet_analyse, liste_paris_recommandés).
     """
-    client = genai.Client(api_key=config.GEMINI_API_KEY)
     prompt = build_prompt(matches_text)
 
     import time
+
+    # Clés Gemini disponibles (rotation si quota épuisé)
+    gemini_keys = list(config.GEMINI_API_KEYS) if config.GEMINI_API_KEYS else []
+    if not gemini_keys:
+        raise RuntimeError("[Analyser] Aucune clé GEMINI_API_KEY configurée.")
+    print(f"[Analyser] {len(gemini_keys)} clé(s) Gemini disponible(s).")
 
     # gemini-2.5-flash avec thinking_budget=0 (pas de thinking mode)
     # Fallback : gemini-flash-latest et gemini-2.0-flash
     models_to_try = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash"]
     response = None
 
-    for model_name in models_to_try:
-        print(f"[Analyser] Appel {model_name} (Google Search activé)...")
-        max_retries = 2
-        success = False
-        for attempt in range(max_retries):
-            try:
-                # Config de base commune
-                gen_config_kwargs = {
-                    "tools": [types.Tool(google_search=types.GoogleSearch())],
-                    "temperature": 0.3,
-                    "max_output_tokens": 32768,
-                }
+    for key_index, api_key in enumerate(gemini_keys):
+        if response is not None:
+            break
+        client = genai.Client(api_key=api_key)
+        print(f"[Analyser] Utilisation clé Gemini #{key_index + 1}")
 
-                # Désactive le mode "thinking" pour gemini-2.5-flash
-                if "2.5" in model_name:
+        for model_name in models_to_try:
+            if response is not None:
+                break
+            print(f"[Analyser] Appel {model_name} (Google Search activé)...")
+            max_retries = 2
+            success = False
+            quota_exhausted = False
+            for attempt in range(max_retries):
+                try:
+                    # Config de base commune
+                    gen_config_kwargs = {
+                        "tools": [types.Tool(google_search=types.GoogleSearch())],
+                        "temperature": 0.3,
+                        "max_output_tokens": 32768,
+                    }
+
+                    # Désactive le mode "thinking" pour gemini-2.5-flash
+                    if "2.5" in model_name:
+                        try:
+                            gen_config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+                        except Exception:
+                            pass
+
+                    # Timeout de 5 min pour éviter les hangs infinis
                     try:
-                        gen_config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
-                    except Exception:
+                        signal.signal(signal.SIGALRM, _timeout_handler)
+                        signal.alarm(GEMINI_CALL_TIMEOUT)
+                    except (AttributeError, OSError):
+                        pass  # Windows n'a pas SIGALRM — on skip
+
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(**gen_config_kwargs),
+                    )
+
+                    try:
+                        signal.alarm(0)  # Annule le timeout
+                    except (AttributeError, OSError):
                         pass
 
-                # Timeout de 5 min pour éviter les hangs infinis
-                try:
-                    signal.signal(signal.SIGALRM, _timeout_handler)
-                    signal.alarm(GEMINI_CALL_TIMEOUT)
-                except (AttributeError, OSError):
-                    pass  # Windows n'a pas SIGALRM — on skip
+                    print(f"[Analyser] Modèle utilisé : {model_name} (clé #{key_index + 1})")
+                    success = True
+                    break
+                except Exception as e:
+                    try:
+                        signal.alarm(0)
+                    except (AttributeError, OSError):
+                        pass
+                    err = str(e).lower()
+                    # Erreurs fatales (mauvaise clé, etc.) → on crash immédiatement
+                    fatal = "invalid_api_key" in err or "permission_denied" in err
+                    if fatal:
+                        print(f"[Analyser] Erreur fatale ({model_name}) : {e}")
+                        raise
+                    # Quota épuisé → on passe directement à la clé suivante
+                    if "resource_exhausted" in err or "429" in err:
+                        print(f"[Analyser] Quota épuisé ({model_name}, clé #{key_index + 1})")
+                        quota_exhausted = True
+                        break
+                    # Toutes les autres erreurs (réseau, 503, disconnect...) → retry puis modèle suivant
+                    if attempt < max_retries - 1:
+                        wait = 15
+                        print(f"[Analyser] {model_name} erreur transitoire, retry dans {wait}s... ({attempt+1}/{max_retries})")
+                        print(f"[Analyser]   → {e}")
+                        time.sleep(wait)
+                    else:
+                        print(f"[Analyser] {model_name} échec après {max_retries} essais, modèle suivant...")
+                        print(f"[Analyser]   → {e}")
 
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(**gen_config_kwargs),
-                )
-
-                try:
-                    signal.alarm(0)  # Annule le timeout
-                except (AttributeError, OSError):
-                    pass
-
-                print(f"[Analyser] Modèle utilisé : {model_name}")
-                success = True
+            # Si quota épuisé sur cette clé → skip tous les modèles restants, passe à la clé suivante
+            if quota_exhausted:
+                print(f"[Analyser] Clé #{key_index + 1} épuisée, rotation vers clé suivante...")
                 break
-            except Exception as e:
-                err = str(e).lower()
-                # Erreurs fatales (mauvaise clé, etc.) → on crash immédiatement
-                fatal = "invalid_api_key" in err or "permission_denied" in err
-                if fatal:
-                    print(f"[Analyser] Erreur fatale ({model_name}) : {e}")
-                    raise
-                # Toutes les autres erreurs (réseau, quota, 503, disconnect...) → retry puis modèle suivant
-                if attempt < max_retries - 1:
-                    wait = 15
-                    print(f"[Analyser] {model_name} erreur transitoire, retry dans {wait}s... ({attempt+1}/{max_retries})")
-                    print(f"[Analyser]   → {e}")
-                    time.sleep(wait)
-                else:
-                    print(f"[Analyser] {model_name} échec après {max_retries} essais, modèle suivant...")
-                    print(f"[Analyser]   → {e}")
-        if success:
-            break
 
     if response is None:
-        raise RuntimeError("[Analyser] Tous les modèles Gemini sont indisponibles.")
+        raise RuntimeError("[Analyser] Tous les modèles Gemini sont indisponibles (toutes les clés épuisées).")
 
     # Log du finish_reason pour debug (MAX_TOKENS, STOP, SAFETY, etc.)
     try:

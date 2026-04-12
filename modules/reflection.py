@@ -218,33 +218,43 @@ def run_reflection(days: int = 30) -> dict:
         f"{REFLECTION_PROMPT}"
     )
 
-    # 5. Appel Gemini (sans Google Search, analyse pure sur données fournies)
-    client = genai.Client(api_key=config.GEMINI_API_KEY)
+    # 5. Appel Gemini (rotation multi-clés, sans Google Search)
+    gemini_keys = list(config.GEMINI_API_KEYS) if config.GEMINI_API_KEYS else []
+    if not gemini_keys:
+        gemini_keys = [config.GEMINI_API_KEY] if config.GEMINI_API_KEY else []
     models_to_try = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash"]
     response = None
 
-    for model_name in models_to_try:
-        try:
-            print(f"[Reflection] Appel {model_name}...")
-            gen_kwargs = {
-                "temperature": 0.2,
-                "max_output_tokens": 8192,
-            }
-            if "2.5" in model_name:
-                try:
-                    gen_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
-                except Exception:
-                    pass
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(**gen_kwargs),
-            )
-            print(f"[Reflection] Modèle utilisé : {model_name}")
+    for key_idx, api_key in enumerate(gemini_keys):
+        if response is not None:
             break
-        except Exception as e:
-            print(f"[Reflection] Échec {model_name} : {e}")
-            continue
+        client = genai.Client(api_key=api_key)
+        for model_name in models_to_try:
+            try:
+                print(f"[Reflection] Appel {model_name} (clé #{key_idx + 1})...")
+                gen_kwargs = {
+                    "temperature": 0.2,
+                    "max_output_tokens": 8192,
+                }
+                if "2.5" in model_name:
+                    try:
+                        gen_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+                    except Exception:
+                        pass
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(**gen_kwargs),
+                )
+                print(f"[Reflection] Modèle utilisé : {model_name} (clé #{key_idx + 1})")
+                break
+            except Exception as e:
+                err = str(e).lower()
+                if "resource_exhausted" in err or "429" in err:
+                    print(f"[Reflection] Quota épuisé (clé #{key_idx + 1}), rotation...")
+                    break
+                print(f"[Reflection] Échec {model_name} : {e}")
+                continue
 
     if response is None:
         print("[Reflection] Aucun modèle disponible. Abandon.")

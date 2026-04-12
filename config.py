@@ -11,8 +11,10 @@ REPORTS_DIR = DATA_DIR / "reports"
 BANKROLL_FILE = DATA_DIR / "bankroll.json"
 BETS_LOG_FILE = DATA_DIR / "bets_log.csv"
 
-# API Keys
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# API Keys — supporte plusieurs clés Gemini séparées par virgule (rotation auto)
+_gemini_raw = os.getenv("GEMINI_API_KEY", "")
+GEMINI_API_KEYS = [k.strip() for k in _gemini_raw.split(",") if k.strip()]
+GEMINI_API_KEY = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else None
 
 # Supporte plusieurs clés Odds API séparées par virgule (rotation auto)
 _odds_raw = os.getenv("ODDS_API_KEY", "")
