@@ -80,7 +80,14 @@ def run_analysis() -> None:
 
     # ── 3. Analyse Gemini ───────────────────────────────────────────────────
     print("\n[3/5] Analyse en cours (Gemini 2.0 Flash + Google Search)...")
-    full_analysis, raw_bets = analyse_matches(matches_text + enriched_data)
+    try:
+        full_analysis, raw_bets = analyse_matches(matches_text + enriched_data)
+    except Exception as e:
+        print(f"  → Erreur Gemini : {e}")
+        if config.TELEGRAM_BOT_TOKEN:
+            from modules.telegram_reporter import send_message
+            send_message(f"❌ Analyse échouée : {str(e)[:200]}")
+        return
 
     if not full_analysis:
         print("  → Erreur : aucune réponse. Vérifiez votre clé GEMINI_API_KEY.")

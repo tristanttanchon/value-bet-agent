@@ -285,7 +285,7 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
 
     for model_name in models_to_try:
         print(f"[Analyser] Appel {model_name} (Google Search activé)...")
-        max_retries = 2
+        max_retries = 3
         success = False
         for attempt in range(max_retries):
             try:
@@ -312,17 +312,21 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
                 success = True
                 break
             except Exception as e:
-                err = str(e)
-                if "429" in err or "RESOURCE_EXHAUSTED" in err or "503" in err or "UNAVAILABLE" in err or "404" in err or "NOT_FOUND" in err:
-                    if attempt < max_retries - 1:
-                        wait = 15
-                        print(f"[Analyser] {model_name} indisponible, retry dans {wait}s... ({attempt+1}/{max_retries})")
-                        time.sleep(wait)
-                    else:
-                        print(f"[Analyser] {model_name} échec, essai modèle suivant...")
-                else:
-                    print(f"[Analyser] Erreur API Gemini ({model_name}) : {e}")
+                err = str(e).lower()
+                # Erreurs fatales (mauvaise clé, etc.) → on crash immédiatement
+                fatal = "invalid_api_key" in err or "permission_denied" in err
+                if fatal:
+                    print(f"[Analyser] Erreur fatale ({model_name}) : {e}")
                     raise
+                # Toutes les autres erreurs (réseau, quota, 503, disconnect...) → retry puis modèle suivant
+                if attempt < max_retries - 1:
+                    wait = 15
+                    print(f"[Analyser] {model_name} erreur transitoire, retry dans {wait}s... ({attempt+1}/{max_retries})")
+                    print(f"[Analyser]   → {e}")
+                    time.sleep(wait)
+                else:
+                    print(f"[Analyser] {model_name} échec après {max_retries} essais, modèle suivant...")
+                    print(f"[Analyser]   → {e}")
         if success:
             break
 
