@@ -186,10 +186,20 @@ RAPPELS FONDAMENTAUX
 
 def build_prompt(matches_text: str) -> str:
     today = date.today().isoformat()
+
+    # Contexte d'apprentissage (historique de performance, blacklist, leçons)
+    try:
+        from modules.learning import build_performance_context
+        learning_context = build_performance_context()
+    except Exception as e:
+        print(f"[Analyser] Contexte d'apprentissage indisponible : {e}")
+        learning_context = ""
+
     return (
         f"ANALYSE DU {today}\n\n"
         f"Voici les matchs du jour avec leurs meilleures cotes de marché :\n\n"
-        f"{matches_text}\n\n"
+        f"{matches_text}\n"
+        f"{learning_context}\n"
         f"{MASTER_PROMPT}"
     )
 

@@ -51,6 +51,13 @@ def run_analysis() -> None:
 
     print(f"   {get_status_line(bankroll)}\n")
 
+    # ── 0b. État de l'apprentissage ────────────────────────────────────────
+    try:
+        from modules.learning import print_learning_status
+        print_learning_status()
+    except Exception as e:
+        print(f"[Main] Apprentissage indisponible : {e}")
+
     # ── 1. Récupération des matchs ──────────────────────────────────────────
     print("[1/5] Récupération des matchs et cotes du jour...")
     matches = get_todays_matches()
@@ -104,9 +111,9 @@ def run_analysis() -> None:
     stats_text = format_stats_for_report(stats)
     report_path = generate_report(full_analysis + "\n\n" + stats_text, valid_bets, bankroll)
 
-    # Envoi rapport complet sur Telegram
+    # Envoi résumé clair sur Telegram (pas le pavé brut)
     if config.TELEGRAM_BOT_TOKEN:
-        send_full_report(full_analysis, valid_bets, bankroll)
+        send_full_report(full_analysis, valid_bets, bankroll, matches_count=len(matches))
 
     print_summary(valid_bets, bankroll)
     print(f"\n  Rapport : {report_path}")

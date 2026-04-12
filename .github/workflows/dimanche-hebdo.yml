@@ -14,6 +14,12 @@ jobs:
           python-version: '3.12'
       - name: Install dependencies
         run: pip install -r requirements.txt
+      - name: Run reflection (learning from past bets)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python -c "from modules.reflection import run_reflection; run_reflection(days=30)"
       - name: Run weekly report
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

@@ -49,44 +49,46 @@ def send_message(text: str) -> bool:
     return success
 
 
-def send_full_report(full_analysis: str, bets: list[dict], bankroll: dict) -> None:
+def send_full_report(full_analysis: str, bets: list[dict], bankroll: dict, matches_count: int = 0) -> None:
     """
-    Envoie le rapport complet de la journée sur Telegram.
-    1. Résumé bankroll + paris recommandés
-    2. Rapport d'analyse complet (découpé si nécessaire)
+    Envoie un résumé clair de la journée sur Telegram (pas de pavé brut).
+    Un seul message concis : bankroll + paris recommandés (ou "aucun").
+    Le rapport détaillé reste sauvegardé dans data/reports/ pour consultation.
     """
     from datetime import date
     today = date.today().isoformat()
     pl = bankroll["current"] - bankroll["initial"]
     roi = (pl / bankroll["initial"] * 100) if bankroll["initial"] else 0
 
-    # ── Message 1 : Résumé ──────────────────────────────────────────────────
     lines = [
-        f"⚽ *ANALYSE VALUE BET — {today}*\n",
-        f"━━━━━━━━━━━━━━━━━━━━━",
-        f"💰 *Bankroll : {bankroll['current']:.2f}€*  ({pl:+.2f}€  ROI {roi:+.1f}%)\n",
+        f"⚽ *VALUE BET — {today}*",
+        f"━━━━━━━━━━━━━━━━━━━",
+        f"💰 Bankroll : *{bankroll['current']:.2f}€*  ({pl:+.2f}€ · ROI {roi:+.1f}%)",
     ]
+    if matches_count:
+        lines.append(f"📊 {matches_count} match(s) analysé(s)")
+    lines.append("")  # ligne vide
 
     if bets:
-        lines.append(f"🎯 *{len(bets)} PARI(S) RECOMMANDÉ(S) :*\n")
+        lines.append(f"🎯 *{len(bets)} pari(s) recommandé(s)*")
+        lines.append("")
         for b in bets:
             edge_pct = float(b.get("edge", 0)) * 100
-            stars = "⭐" * int(b.get("confidence", 0))
-            lines.append(
-                f"✅ *{b.get('match', '')}*\n"
-                f"  📌 Marché : `{b.get('market', '')}`  |  Cote : `{b.get('market_odds', '')}`\n"
-                f"  📈 Edge : `{edge_pct:.1f}%`  |  Confiance : {stars}\n"
-                f"  💶 Mise simulée : `{float(b.get('sim_stake', 0)):.2f}€`\n"
-            )
+            conf = int(b.get("confidence", 0))
+            stars = "⭐" * conf if conf else "–"
+            match = b.get("match", "")
+            market = b.get("market", "")
+            odds = b.get("market_odds", "")
+            stake = float(b.get("sim_stake", 0))
+            lines.append(f"✅ *{match}*")
+            lines.append(f"   `{market}` @ *{odds}*  ·  edge *{edge_pct:.1f}%*  ·  {stars}")
+            lines.append(f"   Mise : {stake:.2f}€")
+            lines.append("")
     else:
-        lines.append("❌ *Aucun pari recommandé aujourd'hui*\n")
-        lines.append("_Le marché est bien pricé — patience est une vertu_ 🧘")
+        lines.append("❌ *Aucun pari recommandé*")
+        lines.append("_Marché efficient — on passe notre tour_ 🧘")
 
-    send_message("\n".join(lines))
-
-    # ── Message 2 : Analyse complète ────────────────────────────────────────
-    if full_analysis:
-        send_message(f"📋 *RAPPORT DÉTAILLÉ — {today}*\n\n{full_analysis}")
+    send_message("\n".join(lines).rstrip())
 
 
 def send_daily_alert(bets: list[dict], bankroll: dict) -> None:
