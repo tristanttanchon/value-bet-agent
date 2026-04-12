@@ -5,10 +5,25 @@ Récupère l'analyse complète + le JSON structuré des paris recommandés.
 
 import re
 import json
+import signal
 from datetime import date
 from google import genai
 from google.genai import types
 import config
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Timeout pour les appels API (évite les hangs infinis)
+# ─────────────────────────────────────────────────────────────────────────────
+GEMINI_CALL_TIMEOUT = 300  # 5 minutes max par appel
+
+
+class GeminiTimeout(Exception):
+    pass
+
+
+def _timeout_handler(signum, frame):
+    raise GeminiTimeout("Appel Gemini timeout après 5 minutes")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MASTER PROMPT V2.0
@@ -285,7 +300,7 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
 
     for model_name in models_to_try:
         print(f"[Analyser] Appel {model_name} (Google Search activé)...")
-        max_retries = 3
+        max_retries = 2
         success = False
         for attempt in range(max_retries):
             try:
@@ -303,11 +318,24 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
                     except Exception:
                         pass
 
+                # Timeout de 5 min pour éviter les hangs infinis
+                try:
+                    signal.signal(signal.SIGALRM, _timeout_handler)
+                    signal.alarm(GEMINI_CALL_TIMEOUT)
+                except (AttributeError, OSError):
+                    pass  # Windows n'a pas SIGALRM — on skip
+
                 response = client.models.generate_content(
                     model=model_name,
                     contents=prompt,
                     config=types.GenerateContentConfig(**gen_config_kwargs),
                 )
+
+                try:
+                    signal.alarm(0)  # Annule le timeout
+                except (AttributeError, OSError):
+                    pass
+
                 print(f"[Analyser] Modèle utilisé : {model_name}")
                 success = True
                 break
