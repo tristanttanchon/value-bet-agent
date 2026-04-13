@@ -3,10 +3,8 @@ Data Enricher — récupère les données fraîches via API-Football (RapidAPI).
 Blessés/suspendus, forme récente, H2H, stats d'équipe.
 Ces données sont injectées dans le prompt Gemini AVANT l'analyse.
 
-Optimisé pour le plan gratuit (100 req/jour) :
-— Cache des team IDs pour éviter les lookups dupliqués
-— Limite le nombre de matchs enrichis (MAX_ENRICHED_MATCHES)
-— Priorise les top ligues (plus de données disponibles)
+Rotation multi-clés (4 clés × 100 req = 400 req/jour → tous les matchs).
+Cache des team IDs pour éviter les lookups dupliqués.
 """
 
 import requests
@@ -14,21 +12,15 @@ from datetime import date
 import config
 
 
-HEADERS = {
-    "x-rapidapi-host": "api-football-v1.p.rapidapi.com",
-    "x-rapidapi-key": config.API_FOOTBALL_KEY or "",
-}
 BASE_URL = "https://api-football-v1.p.rapidapi.com/v3"
-
-# Nombre max de matchs à enrichir (9 req/match → 10 matchs = 90 req)
-MAX_ENRICHED_MATCHES = 10
 
 # Cache des team IDs pour éviter les requêtes dupliquées
 _team_id_cache: dict[str, int | None] = {}
 
-# Compteur de requêtes pour ne pas dépasser le quota
+# Gestion multi-clés avec rotation
+_current_key_index = 0
 _request_count = 0
-MAX_REQUESTS = 95  # marge de sécurité sur les 100
+QUOTA_PER_KEY = 95  # marge de sécurité sur les 100/clé
 
 # Ligues prioritaires pour l'enrichissement (les plus fiables en données)
 PRIORITY_LEAGUES = [
@@ -38,6 +30,27 @@ PRIORITY_LEAGUES = [
     "soccer_netherlands_eredivisie", "soccer_england_championship",
     "soccer_portugal_primeira_liga", "soccer_belgium_first_div",
 ]
+
+
+def _get_current_key() -> str | None:
+    """Retourne la clé API-Football courante."""
+    keys = config.API_FOOTBALL_KEYS
+    if not keys or _current_key_index >= len(keys):
+        return None
+    return keys[_current_key_index]
+
+
+def _rotate_key() -> bool:
+    """Passe à la clé suivante. Retourne False si plus de clés disponibles."""
+    global _current_key_index, _request_count
+    _current_key_index += 1
+    _request_count = 0
+    keys = config.API_FOOTBALL_KEYS
+    if _current_key_index >= len(keys):
+        print(f"[Enricher] Toutes les clés API-Football épuisées ({len(keys)} clé(s)).")
+        return False
+    print(f"[Enricher] Rotation vers clé API-Football #{_current_key_index + 1}/{len(keys)}")
+    return True
 
 # Correspondance compétition → league_id API-Football
 LEAGUE_IDS = {
@@ -68,17 +81,30 @@ LEAGUE_IDS = {
 
 
 def _get(endpoint: str, params: dict) -> dict | None:
-    """Appel API-Football avec gestion d'erreur et compteur de quota."""
+    """Appel API-Football avec rotation multi-clés et compteur de quota."""
     global _request_count
-    if not config.API_FOOTBALL_KEY:
+
+    current_key = _get_current_key()
+    if not current_key:
         return None
-    if _request_count >= MAX_REQUESTS:
-        print(f"[Enricher] Quota atteint ({_request_count}/{MAX_REQUESTS}), requête ignorée.")
-        return None
+
+    # Rotation si quota atteint sur la clé courante
+    if _request_count >= QUOTA_PER_KEY:
+        if not _rotate_key():
+            return None
+        current_key = _get_current_key()
+        if not current_key:
+            return None
+
+    headers = {
+        "x-rapidapi-host": "api-football-v1.p.rapidapi.com",
+        "x-rapidapi-key": current_key,
+    }
+
     try:
         resp = requests.get(
             f"{BASE_URL}/{endpoint}",
-            headers=HEADERS,
+            headers=headers,
             params=params,
             timeout=10,
         )
@@ -86,8 +112,11 @@ def _get(endpoint: str, params: dict) -> dict | None:
         if resp.status_code == 200:
             return resp.json()
         if resp.status_code == 429:
-            print(f"[Enricher] Quota API-Football épuisé (429).")
-            _request_count = MAX_REQUESTS  # bloque les prochains appels
+            print(f"[Enricher] Quota clé #{_current_key_index + 1} épuisée (429).")
+            if not _rotate_key():
+                return None
+            # Retry avec la nouvelle clé
+            return _get(endpoint, params)
         return None
     except Exception as e:
         print(f"[Enricher] Erreur API-Football ({endpoint}) : {e}")
@@ -217,11 +246,15 @@ def enrich_matches(matches: list[dict]) -> str:
     Priorise les top ligues et limite à MAX_ENRICHED_MATCHES pour
     rester dans le quota gratuit (100 req/jour).
     """
-    global _request_count
+    global _request_count, _current_key_index
     if not config.API_FOOTBALL_KEY:
         return ""
 
-    _request_count = 0  # reset compteur
+    # Reset compteurs
+    _request_count = 0
+    _current_key_index = 0
+    n_keys = len(config.API_FOOTBALL_KEYS)
+    total_quota = n_keys * QUOTA_PER_KEY
 
     # Trie les matchs : top ligues d'abord
     def priority_sort(m):
@@ -231,18 +264,21 @@ def enrich_matches(matches: list[dict]) -> str:
         return 999
 
     sorted_matches = sorted(matches, key=priority_sort)
-    to_enrich = sorted_matches[:MAX_ENRICHED_MATCHES]
-    skipped = len(matches) - len(to_enrich)
 
-    print(f"[Enricher] Enrichissement de {len(to_enrich)}/{len(matches)} match(s) "
-          f"(top ligues prioritaires, {skipped} ignoré(s))...")
+    print(f"[Enricher] {n_keys} clé(s) API-Football ({total_quota} req max)")
+    print(f"[Enricher] Enrichissement de {len(sorted_matches)} match(s) (top ligues en priorité)...")
 
     lines = ["\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
     lines.append("DONNÉES FRAÎCHES — API-FOOTBALL (injectées automatiquement)")
-    lines.append(f"({len(to_enrich)} matchs enrichis sur {len(matches)} — top ligues prioritaires)")
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 
-    for match in to_enrich:
+    enriched_count = 0
+    for match in sorted_matches:
+        # Stop si plus de clés disponibles
+        if _get_current_key() is None:
+            remaining = len(sorted_matches) - enriched_count
+            print(f"[Enricher] Quota total épuisé, {remaining} match(s) non enrichi(s).")
+            break
         home_name = match["home"]
         away_name = match["away"]
         competition = match["competition"]
@@ -252,6 +288,8 @@ def enrich_matches(matches: list[dict]) -> str:
         # Récupère les IDs des équipes
         home_id = get_team_id(home_name)
         away_id = get_team_id(away_name)
+
+        enriched_count += 1
 
         if not home_id or not away_id:
             lines.append("  [Données non disponibles pour ce match]\n")
@@ -330,5 +368,8 @@ def enrich_matches(matches: list[dict]) -> str:
 
         lines.append("")
 
-    print(f"[Enricher] Terminé — {_request_count} requête(s) API-Football utilisée(s) / {MAX_REQUESTS} max.")
+    total_used = (_current_key_index * QUOTA_PER_KEY) + _request_count
+    n_keys = len(config.API_FOOTBALL_KEYS)
+    print(f"[Enricher] Terminé — {enriched_count} match(s) enrichi(s), "
+          f"~{total_used} requête(s) utilisée(s) sur {n_keys} clé(s).")
     return "\n".join(lines)

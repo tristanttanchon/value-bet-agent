@@ -23,7 +23,11 @@ ODDS_API_KEY = ODDS_API_KEYS[0] if ODDS_API_KEYS else None
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY")
+
+# Supporte plusieurs clés API-Football séparées par virgule (rotation auto)
+_football_raw = os.getenv("API_FOOTBALL_KEY", "")
+API_FOOTBALL_KEYS = [k.strip() for k in _football_raw.split(",") if k.strip()]
+API_FOOTBALL_KEY = API_FOOTBALL_KEYS[0] if API_FOOTBALL_KEYS else None
 
 # Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://hltoumodbdpxqespjcsb.supabase.co")
