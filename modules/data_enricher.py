@@ -1,7 +1,12 @@
 """
 Data Enricher — récupère les données fraîches via API-Football (RapidAPI).
 Blessés/suspendus, forme récente, H2H, stats d'équipe.
-Ces données sont injectées dans le prompt Claude AVANT l'analyse.
+Ces données sont injectées dans le prompt Gemini AVANT l'analyse.
+
+Optimisé pour le plan gratuit (100 req/jour) :
+— Cache des team IDs pour éviter les lookups dupliqués
+— Limite le nombre de matchs enrichis (MAX_ENRICHED_MATCHES)
+— Priorise les top ligues (plus de données disponibles)
 """
 
 import requests
@@ -14,6 +19,25 @@ HEADERS = {
     "x-rapidapi-key": config.API_FOOTBALL_KEY or "",
 }
 BASE_URL = "https://api-football-v1.p.rapidapi.com/v3"
+
+# Nombre max de matchs à enrichir (9 req/match → 10 matchs = 90 req)
+MAX_ENRICHED_MATCHES = 10
+
+# Cache des team IDs pour éviter les requêtes dupliquées
+_team_id_cache: dict[str, int | None] = {}
+
+# Compteur de requêtes pour ne pas dépasser le quota
+_request_count = 0
+MAX_REQUESTS = 95  # marge de sécurité sur les 100
+
+# Ligues prioritaires pour l'enrichissement (les plus fiables en données)
+PRIORITY_LEAGUES = [
+    "soccer_epl", "soccer_spain_la_liga", "soccer_italy_serie_a",
+    "soccer_germany_bundesliga", "soccer_france_ligue_one",
+    "soccer_uefa_champs_league", "soccer_uefa_europa_league",
+    "soccer_netherlands_eredivisie", "soccer_england_championship",
+    "soccer_portugal_primeira_liga", "soccer_belgium_first_div",
+]
 
 # Correspondance compétition → league_id API-Football
 LEAGUE_IDS = {
@@ -44,8 +68,12 @@ LEAGUE_IDS = {
 
 
 def _get(endpoint: str, params: dict) -> dict | None:
-    """Appel API-Football avec gestion d'erreur."""
+    """Appel API-Football avec gestion d'erreur et compteur de quota."""
+    global _request_count
     if not config.API_FOOTBALL_KEY:
+        return None
+    if _request_count >= MAX_REQUESTS:
+        print(f"[Enricher] Quota atteint ({_request_count}/{MAX_REQUESTS}), requête ignorée.")
         return None
     try:
         resp = requests.get(
@@ -54,8 +82,12 @@ def _get(endpoint: str, params: dict) -> dict | None:
             params=params,
             timeout=10,
         )
+        _request_count += 1
         if resp.status_code == 200:
             return resp.json()
+        if resp.status_code == 429:
+            print(f"[Enricher] Quota API-Football épuisé (429).")
+            _request_count = MAX_REQUESTS  # bloque les prochains appels
         return None
     except Exception as e:
         print(f"[Enricher] Erreur API-Football ({endpoint}) : {e}")
@@ -63,10 +95,15 @@ def _get(endpoint: str, params: dict) -> dict | None:
 
 
 def get_team_id(team_name: str) -> int | None:
-    """Cherche l'ID d'une équipe par son nom."""
+    """Cherche l'ID d'une équipe par son nom (avec cache)."""
+    if team_name in _team_id_cache:
+        return _team_id_cache[team_name]
     data = _get("teams", {"search": team_name})
     if data and data.get("results", 0) > 0:
-        return data["response"][0]["team"]["id"]
+        tid = data["response"][0]["team"]["id"]
+        _team_id_cache[team_name] = tid
+        return tid
+    _team_id_cache[team_name] = None
     return None
 
 
@@ -176,18 +213,36 @@ def get_team_stats(team_id: int, league_id: int) -> dict:
 
 def enrich_matches(matches: list[dict]) -> str:
     """
-    Pour chaque match, récupère les données fraîches et retourne
-    un bloc texte structuré à injecter dans le prompt Claude.
+    Enrichit les matchs du jour avec des données fraîches.
+    Priorise les top ligues et limite à MAX_ENRICHED_MATCHES pour
+    rester dans le quota gratuit (100 req/jour).
     """
+    global _request_count
     if not config.API_FOOTBALL_KEY:
         return ""
 
-    print(f"[Enricher] Enrichissement de {len(matches)} match(s)...")
+    _request_count = 0  # reset compteur
+
+    # Trie les matchs : top ligues d'abord
+    def priority_sort(m):
+        sport_key = m.get("sport_key", "")
+        if sport_key in PRIORITY_LEAGUES:
+            return PRIORITY_LEAGUES.index(sport_key)
+        return 999
+
+    sorted_matches = sorted(matches, key=priority_sort)
+    to_enrich = sorted_matches[:MAX_ENRICHED_MATCHES]
+    skipped = len(matches) - len(to_enrich)
+
+    print(f"[Enricher] Enrichissement de {len(to_enrich)}/{len(matches)} match(s) "
+          f"(top ligues prioritaires, {skipped} ignoré(s))...")
+
     lines = ["\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
     lines.append("DONNÉES FRAÎCHES — API-FOOTBALL (injectées automatiquement)")
+    lines.append(f"({len(to_enrich)} matchs enrichis sur {len(matches)} — top ligues prioritaires)")
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 
-    for match in matches:
+    for match in to_enrich:
         home_name = match["home"]
         away_name = match["away"]
         competition = match["competition"]
@@ -275,4 +330,5 @@ def enrich_matches(matches: list[dict]) -> str:
 
         lines.append("")
 
+    print(f"[Enricher] Terminé — {_request_count} requête(s) API-Football utilisée(s) / {MAX_REQUESTS} max.")
     return "\n".join(lines)
