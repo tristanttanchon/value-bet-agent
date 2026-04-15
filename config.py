@@ -35,7 +35,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 # Simulation settings
 INITIAL_BANKROLL = 50.0
-MIN_EDGE_THRESHOLD = 0.05   # 5% minimum pour jouer
+MIN_EDGE_THRESHOLD = 0.03   # 3% minimum pour jouer (plus de volume)
 MAX_KELLY_FRACTION = 0.25   # Kelly fractionnée x0.25
 MAX_BET_PCT = 0.05          # 5% max du bankroll par pari
 MIN_STAKE = 0.10            # Mise minimale 10 centimes
