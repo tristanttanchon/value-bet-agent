@@ -16,9 +16,12 @@ from modules.telegram_reporter import send_message
 
 def fetch_scores(sport_key: str) -> list[dict]:
     url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/scores/"
+    # Rotation multi-clés Odds API
+    keys = list(config.ODDS_API_KEYS) if config.ODDS_API_KEYS else []
+    api_key = keys[0] if keys else config.ODDS_API_KEY
     params = {
-        "apiKey": config.ODDS_API_KEY,
-        "daysFrom": 2,
+        "apiKey": api_key,
+        "daysFrom": 5,
         "dateFormat": "iso",
     }
     try:
