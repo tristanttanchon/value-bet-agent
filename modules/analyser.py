@@ -307,9 +307,9 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
         raise RuntimeError("[Analyser] Aucune clé GEMINI_API_KEY configurée.")
     print(f"[Analyser] {len(gemini_keys)} clé(s) Gemini disponible(s).")
 
-    # gemini-2.5-flash avec thinking_budget=0 (pas de thinking mode)
-    # Fallback : gemini-flash-latest et gemini-2.0-flash
-    models_to_try = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash"]
+    # gemini-2.0-flash en PREMIER (1500 req/jour gratuit)
+    # Fallback : gemini-2.5-flash (seulement 25 req/jour gratuit — garde-le en dernier)
+    models_to_try = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash"]
     response = None
 
     for key_index, api_key in enumerate(gemini_keys):
@@ -335,7 +335,7 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
                     }
 
                     # Désactive le mode "thinking" pour gemini-2.5-flash
-                    if "2.5" in model_name:
+                    if "2.5" in model_name or "flash-preview" in model_name:
                         try:
                             gen_config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
                         except Exception:
