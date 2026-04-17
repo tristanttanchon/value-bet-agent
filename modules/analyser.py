@@ -43,14 +43,9 @@ et calcule un edge pour chacun. Ne te limite pas à un seul marché par match.
 Un edge ≥ 3% = value jouable. Un edge ≥ 7% = value forte.
 
 ÉTAPE 1 — MATCHS DU JOUR (déjà fournis ci-dessus)
-Les matchs et leurs cotes de marché actuelles te sont fournis dans le message.
-Ne recherche que les matchs de cette liste.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-ÉTAPE 2 — COLLECTE DE DONNÉES (pour chaque match)
-Utilise Google Search pour trouver les informations suivantes. Si une donnée est
-introuvable, note-la dans "DONNÉES MANQUANTES".
+Les matchs, leurs cotes de marché actuelles ET les données enrichies (blessés,
+forme récente, H2H, stats avancées) te sont fournis dans le message.
+Exploite TOUTES ces données pour ton analyse — elles sont récentes et fiables.
 
 ▸ CONTEXTE & ABSENCES
   — Absences confirmées (blessés, suspendus) et impact tactique réel
@@ -72,13 +67,12 @@ introuvable, note-la dans "DONNÉES MANQUANTES".
 ▸ CONDITIONS EXTÉRIEURES
   — Météo prévue et impact potentiel sur le jeu
 
-▸ STATISTIQUES AVANCÉES (FBRef · Understat · Sofascore · WhoScored)
-  — xG et xGA moyens (10 derniers matchs)
-  — Analyse de variance : sur/sous-performance des xG ?
-  — PPDA (intensité du pressing)
-  — Field Tilt (domination territoriale réelle)
-  — Post-Shot xG (PSxG) : forme réelle du gardien
-  — Expected Threat (xT) si disponible
+▸ STATISTIQUES AVANCÉES (données fournies dans le prompt)
+  — xG et xGA moyens déjà fournis → analyse la sur/sous-performance
+  — Forme des 5 derniers matchs fournie → tire des conclusions concrètes
+  — H2H fourni → identifie les patterns historiques
+  — Blessés fournis → évalue l'impact tactique réel sur chaque poste
+  — Utilise ta connaissance des équipes pour compléter (style de jeu, pressing, etc.)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -196,8 +190,8 @@ RAPPELS FONDAMENTAUX
 — La value naît de l'analyse terrain, des absences et du contexte.
 — Cherche activement la value sur TOUS les marchés de chaque match.
 — Un edge de 3% avec des données fiables (A ou B) est jouable.
-— Ne te réfugie pas derrière "données insuffisantes" — Google Search te
-  donne accès aux infos récentes. Utilise-les pour estimer des probabilités.
+— Ne te réfugie pas derrière "données insuffisantes" — les données API-Football
+  et ta connaissance des équipes suffisent pour estimer des probabilités.
 — Sur 20+ matchs, tu devrais typiquement trouver 3 à 8 paris value.
   Si tu en trouves 0, c'est probablement que tu es trop conservateur.
 """
@@ -327,9 +321,8 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
             quota_exhausted = False
             for attempt in range(max_retries):
                 try:
-                    # Config de base commune
+                    # Config de base commune (sans Google Search grounding — quota trop limité)
                     gen_config_kwargs = {
-                        "tools": [types.Tool(google_search=types.GoogleSearch())],
                         "temperature": 0.3,
                         "max_output_tokens": 32768,
                     }
