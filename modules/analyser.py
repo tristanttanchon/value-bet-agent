@@ -369,6 +369,7 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
                     # Quota épuisé → on passe directement à la clé suivante
                     if "resource_exhausted" in err or "429" in err:
                         print(f"[Analyser] Quota épuisé ({model_name}, clé #{key_index + 1})")
+                        print(f"[Analyser]   → Détail erreur : {e}")
                         quota_exhausted = True
                         break
                     # Toutes les autres erreurs (réseau, 503, disconnect...) → retry puis modèle suivant
