@@ -42,7 +42,56 @@ Pour CHAQUE match, explore TOUS les marchés disponibles (1X2, Over/Under 2.5, B
 et calcule un edge pour chacun. Ne te limite pas à un seul marché par match.
 Un edge ≥ 3% = value jouable. Un edge ≥ 7% = value forte.
 
-ÉTAPE 1 — MATCHS DU JOUR (déjà fournis ci-dessus)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⚠️ ORDRE DE SORTIE IMPOSÉ (critique pour le système)
+
+Tu dois IMPÉRATIVEMENT structurer ta réponse dans cet ordre exact :
+
+1. **D'ABORD** : le bloc JSON avec les paris recommandés (voir format ÉTAPE 1 ci-dessous)
+2. **ENSUITE** : l'analyse détaillée de chaque match (ÉTAPES 2 à 6)
+
+NE COMMENCE PAS par du texte introductif. Commence directement par ```json.
+Le JSON doit être complet et refléter TOUS les paris value que tu identifies
+(même ceux découverts pendant ta réflexion interne avant d'écrire).
+
+Si tu omets le JSON en premier, le système ne pourra pas extraire les paris
+et la réponse sera perdue.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ÉTAPE 1 — SORTIE JSON STRUCTURÉE (EN PREMIER DANS TA RÉPONSE)
+
+Format exact à respecter (commence TA RÉPONSE par ```json et ferme par ```) :
+
+```json
+{
+  "analysis_date": "YYYY-MM-DD",
+  "recommended_bets": [
+    {
+      "match": "Équipe A vs Équipe B",
+      "competition": "Nom compétition",
+      "kickoff": "HH:MM",
+      "market": "1|X|2|Over 2.5|Under 2.5|BTTS|AH0",
+      "model_probability": 0.55,
+      "market_odds": 1.85,
+      "edge": 0.0175,
+      "confidence": 3,
+      "data_reliability": "A",
+      "recommended_stake_pct": 0.018
+    }
+  ],
+  "no_value_matches": ["match1", "match2"]
+}
+```
+
+Si aucun pari recommandé, "recommended_bets" doit être un tableau vide [].
+Réfléchis à TOUS les matchs et TOUS leurs marchés AVANT d'écrire le JSON.
+Utilise ton mode de raisonnement interne pour tout évaluer, puis commit le JSON.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ÉTAPE 2 — MATCHS DU JOUR (déjà fournis ci-dessus)
 Les matchs, leurs cotes de marché actuelles ET les données enrichies (blessés,
 forme récente, H2H, stats avancées) te sont fournis dans le message.
 Exploite TOUTES ces données pour ton analyse — elles sont récentes et fiables.
@@ -146,42 +195,6 @@ Pour chaque match :
 Tableau des paris recommandés classés par edge décroissant.
 Liste des matchs analysés sans value (avec raison courte).
 Données manquantes globales.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-ÉTAPE 7 — SORTIE JSON STRUCTURÉE (OBLIGATOIRE)
-
-Tu dois IMPÉRATIVEMENT analyser TOUS les matchs de la liste en détail avec les
-étapes 2 à 6 ci-dessus, puis, à la TOUTE FIN de ta réponse, générer un bloc JSON
-valide résumant les paris recommandés.
-
-⚠️ NE JAMAIS commencer par le bloc JSON. L'analyse détaillée passe d'abord,
-puis le JSON vient en conclusion. Si tu omets ce JSON final, le système échoue.
-
-Format exact à respecter (commence par ```json et finit par ```) :
-
-```json
-{
-  "analysis_date": "YYYY-MM-DD",
-  "recommended_bets": [
-    {
-      "match": "Équipe A vs Équipe B",
-      "competition": "Nom compétition",
-      "kickoff": "HH:MM",
-      "market": "1|X|2|Over 2.5|Under 2.5|BTTS|AH0",
-      "model_probability": 0.55,
-      "market_odds": 1.85,
-      "edge": 0.0175,
-      "confidence": 3,
-      "data_reliability": "A",
-      "recommended_stake_pct": 0.018
-    }
-  ],
-  "no_value_matches": ["match1", "match2"]
-}
-```
-
-Si aucun pari recommandé, "recommended_bets" doit être un tableau vide [].
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
