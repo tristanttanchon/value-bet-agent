@@ -301,9 +301,9 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
         raise RuntimeError("[Analyser] Aucune clé GEMINI_API_KEY configurée.")
     print(f"[Analyser] {len(gemini_keys)} clé(s) Gemini disponible(s).")
 
-    # gemini-2.0-flash en PREMIER (paid tier avec billing activé, très stable)
-    # Fallback : 2.5-flash (plus récent mais preview) puis flash-latest
-    models_to_try = ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-flash-latest"]
+    # gemini-2.5-flash en PREMIER (2.0-flash déprécié pour nouveaux projets en 2026)
+    # Fallback : flash-latest puis 2.0-flash (au cas où, mais va échouer)
+    models_to_try = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash"]
     response = None
 
     for key_index, api_key in enumerate(gemini_keys):
@@ -321,10 +321,14 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
             quota_exhausted = False
             for attempt in range(max_retries):
                 try:
-                    # Config de base commune (sans Google Search grounding — quota trop limité)
+                    # Config de base commune
+                    # max_output_tokens=65536 pour éviter que le JSON final soit tronqué
+                    # (Gemini 2.5 Flash supporte jusqu'à 65536 tokens en sortie)
+                    # Google Search grounding réactivé (billing activé → quota large)
                     gen_config_kwargs = {
+                        "tools": [types.Tool(google_search=types.GoogleSearch())],
                         "temperature": 0.3,
-                        "max_output_tokens": 32768,
+                        "max_output_tokens": 65536,
                     }
 
                     # Désactive le mode "thinking" pour gemini-2.5-flash
