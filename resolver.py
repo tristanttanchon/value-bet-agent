@@ -89,13 +89,16 @@ def determine_outcome(market: str, home_score: int, away_score: int) -> str | No
     market = market.strip()
     total = home_score + away_score
 
+    btts_yes = home_score > 0 and away_score > 0
     outcomes = {
         "1": "WIN" if home_score > away_score else "LOSS",
         "X": "WIN" if home_score == away_score else "LOSS",
         "2": "WIN" if away_score > home_score else "LOSS",
         "Over 2.5": "WIN" if total > 2.5 else "LOSS",
         "Under 2.5": "WIN" if total < 2.5 else "LOSS",
-        "BTTS": "WIN" if home_score > 0 and away_score > 0 else "LOSS",
+        "BTTS": "WIN" if btts_yes else "LOSS",
+        "BTTS Yes": "WIN" if btts_yes else "LOSS",
+        "BTTS No": "WIN" if not btts_yes else "LOSS",
     }
 
     if market in outcomes:

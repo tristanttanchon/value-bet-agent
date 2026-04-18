@@ -75,6 +75,16 @@ COMPETITION_KEYS = [
     "soccer_mexico_ligamx",
 ]
 
+# Compétitions "premium" : on récupère en plus Over/Under 2.5 et BTTS
+# (3× plus de crédits API pour ces 5 → plus d'opportunités de value)
+PREMIUM_COMPETITIONS = {
+    "soccer_epl",
+    "soccer_spain_la_liga",
+    "soccer_italy_serie_a",
+    "soccer_germany_bundesliga",
+    "soccer_france_ligue_one",
+}
+
 COMPETITION_NAMES = {
     # Ligues européennes majeures
     "soccer_epl": "Premier League",

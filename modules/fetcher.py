@@ -28,13 +28,18 @@ def get_todays_matches() -> list[dict]:
     current_key_index = 0
     print(f"[Fetcher] {len(keys)} clé(s) API disponible(s).")
 
+    premium_set = getattr(config, "PREMIUM_COMPETITIONS", set())
+
     for sport_key in config.COMPETITION_KEYS:
         try:
+            is_premium = sport_key in premium_set
+            # Premium : on récupère aussi Over/Under 2.5 et BTTS
+            markets_str = "h2h,totals,btts" if is_premium else "h2h"
             url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/"
             params = {
                 "apiKey": keys[current_key_index],
                 "regions": "eu",
-                "markets": "h2h",
+                "markets": markets_str,
                 "oddsFormat": "decimal",
                 "dateFormat": "iso",
             }
@@ -77,24 +82,46 @@ def get_todays_matches() -> list[dict]:
                 competition = config.COMPETITION_NAMES.get(sport_key, sport_key)
 
                 # Meilleure cote disponible sur les bookmakers européens
-                best_odds: dict[str, float | None] = {"1": None, "X": None, "2": None}
+                # Marchés : 1X2 (toujours) + Over/Under 2.5 + BTTS (premium uniquement)
+                best_odds: dict[str, float | None] = {
+                    "1": None, "X": None, "2": None,
+                    "Over 2.5": None, "Under 2.5": None,
+                    "BTTS Yes": None, "BTTS No": None,
+                }
 
                 for bookmaker in game.get("bookmakers", []):
                     for market in bookmaker.get("markets", []):
-                        if market["key"] != "h2h":
-                            continue
-                        for outcome in market["outcomes"]:
-                            name = outcome["name"]
-                            price = float(outcome["price"])
-                            if name == home:
-                                if best_odds["1"] is None or price > best_odds["1"]:
-                                    best_odds["1"] = price
-                            elif name == away:
-                                if best_odds["2"] is None or price > best_odds["2"]:
-                                    best_odds["2"] = price
-                            elif name == "Draw":
-                                if best_odds["X"] is None or price > best_odds["X"]:
-                                    best_odds["X"] = price
+                        mkey = market["key"]
+                        if mkey == "h2h":
+                            for outcome in market["outcomes"]:
+                                name = outcome["name"]
+                                price = float(outcome["price"])
+                                if name == home:
+                                    if best_odds["1"] is None or price > best_odds["1"]:
+                                        best_odds["1"] = price
+                                elif name == away:
+                                    if best_odds["2"] is None or price > best_odds["2"]:
+                                        best_odds["2"] = price
+                                elif name == "Draw":
+                                    if best_odds["X"] is None or price > best_odds["X"]:
+                                        best_odds["X"] = price
+                        elif mkey == "totals":
+                            # On ne garde que la ligne 2.5
+                            for outcome in market["outcomes"]:
+                                if float(outcome.get("point", 0)) != 2.5:
+                                    continue
+                                name = outcome["name"]  # "Over" / "Under"
+                                price = float(outcome["price"])
+                                slot = "Over 2.5" if name == "Over" else "Under 2.5"
+                                if best_odds[slot] is None or price > best_odds[slot]:
+                                    best_odds[slot] = price
+                        elif mkey == "btts":
+                            for outcome in market["outcomes"]:
+                                name = outcome["name"]  # "Yes" / "No"
+                                price = float(outcome["price"])
+                                slot = "BTTS Yes" if name == "Yes" else "BTTS No"
+                                if best_odds[slot] is None or price > best_odds[slot]:
+                                    best_odds[slot] = price
 
                 matches.append({
                     "match": f"{home} vs {away}",
@@ -117,11 +144,20 @@ def get_todays_matches() -> list[dict]:
 
 
 def format_matches_for_prompt(matches: list[dict]) -> str:
-    """Formate les matchs du jour pour l'injection dans le prompt Claude."""
+    """Formate les matchs du jour pour l'injection dans le prompt Claude.
+
+    Affiche 1X2 toujours, puis Over/Under 2.5 et BTTS quand dispos (premium).
+    """
     lines = []
     for m in matches:
         o = m["odds"]
-        cotes = f"1={o['1'] or 'N/A'}  X={o['X'] or 'N/A'}  2={o['2'] or 'N/A'}"
+        parts = [f"1={o.get('1') or 'N/A'}  X={o.get('X') or 'N/A'}  2={o.get('2') or 'N/A'}"]
+        # Marchés supplémentaires (premium)
+        if o.get("Over 2.5") or o.get("Under 2.5"):
+            parts.append(f"O2.5={o.get('Over 2.5') or 'N/A'}  U2.5={o.get('Under 2.5') or 'N/A'}")
+        if o.get("BTTS Yes") or o.get("BTTS No"):
+            parts.append(f"BTTS_Y={o.get('BTTS Yes') or 'N/A'}  BTTS_N={o.get('BTTS No') or 'N/A'}")
+        cotes = "  |  ".join(parts)
         lines.append(
             f"  • {m['match']}  |  {m['competition']}  |  {m['kickoff']}  |  {cotes}"
         )

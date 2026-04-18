@@ -72,7 +72,7 @@ Format exact à respecter (commence TA RÉPONSE par ```json et ferme par ```) :
       "match": "Équipe A vs Équipe B",
       "competition": "Nom compétition",
       "kickoff": "HH:MM",
-      "market": "1|X|2|Over 2.5|Under 2.5|BTTS|AH0",
+      "market": "1|X|2|Over 2.5|Under 2.5|BTTS Yes|BTTS No|AH0",
       "model_probability": 0.55,
       "market_odds": 1.85,
       "edge": 0.0175,
