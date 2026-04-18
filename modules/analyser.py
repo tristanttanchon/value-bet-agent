@@ -301,10 +301,9 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
         raise RuntimeError("[Analyser] Aucune clé GEMINI_API_KEY configurée.")
     print(f"[Analyser] {len(gemini_keys)} clé(s) Gemini disponible(s).")
 
-    # gemini-1.5-flash en PREMIER (free tier confirmé : 1500 req/jour)
-    # gemini-2.0-flash a limit=0 sur free tier pour nouveaux projets (besoin billing)
-    # gemini-2.5-flash Preview : free tier limité à ~25 req/jour
-    models_to_try = ["gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-2.0-flash", "gemini-2.5-flash"]
+    # gemini-2.0-flash en PREMIER (paid tier avec billing activé, très stable)
+    # Fallback : 2.5-flash (plus récent mais preview) puis flash-latest
+    models_to_try = ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-flash-latest"]
     response = None
 
     for key_index, api_key in enumerate(gemini_keys):
