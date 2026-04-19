@@ -140,6 +140,17 @@ def get_todays_matches() -> list[dict]:
 
     # Tri par heure de coup d'envoi
     matches.sort(key=lambda m: m["kickoff"])
+
+    # Diagnostic : combien de matchs ont les cotes premium (Over/Under + BTTS)
+    premium_names = {config.COMPETITION_NAMES.get(k, k) for k in premium_set}
+    premium_matches = [m for m in matches if m["competition"] in premium_names]
+    with_totals = sum(1 for m in premium_matches if m["odds"].get("Over 2.5") or m["odds"].get("Under 2.5"))
+    with_btts = sum(1 for m in premium_matches if m["odds"].get("BTTS Yes") or m["odds"].get("BTTS No"))
+    print(
+        f"[Fetcher] Matchs premium : {len(premium_matches)} "
+        f"(avec Over/Under 2.5 : {with_totals}, avec BTTS : {with_btts})"
+    )
+
     return matches
 
 
