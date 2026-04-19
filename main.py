@@ -118,6 +118,37 @@ def run_analysis() -> None:
     stats_text = format_stats_for_report(stats)
     report_path = generate_report(full_analysis + "\n\n" + stats_text, valid_bets, bankroll)
 
+    # Publication Telegraph : une page détaillée par pari recommandé
+    if valid_bets and config.TELEGRAM_BOT_TOKEN:
+        try:
+            from modules.telegraph import publish_analysis
+            published = 0
+            for bet in valid_bets:
+                analysis_text = (bet.get("analysis") or "").strip()
+                if not analysis_text:
+                    continue
+                title = f"{bet.get('match', 'Match')} — {bet.get('market', '')}"
+                edge_pct = float(bet.get("edge", 0)) * 100
+                conf = int(bet.get("confidence", 0)) if bet.get("confidence") else 0
+                header = {
+                    "Compétition": bet.get("competition", "—"),
+                    "Coup d'envoi": bet.get("kickoff", "—"),
+                    "Marché": bet.get("market", "—"),
+                    "Cote marché": bet.get("market_odds", "—"),
+                    "Edge": f"{edge_pct:.1f}%",
+                    "Confiance": f"{conf}/5" if conf else "—",
+                    "Fiabilité données": bet.get("data_reliability", "—"),
+                    "Mise simulée": f"{float(bet.get('sim_stake', 0)):.2f}€",
+                }
+                url = publish_analysis(title, analysis_text, header)
+                if url:
+                    bet["telegraph_url"] = url
+                    published += 1
+                    print(f"[Telegraph] ✓ {title} → {url}")
+            print(f"[Telegraph] {published}/{len(valid_bets)} analyse(s) publiée(s).")
+        except Exception as e:
+            print(f"[Main] Telegraph publishing failed : {e}")
+
     # Envoi résumé clair sur Telegram (pas le pavé brut)
     if config.TELEGRAM_BOT_TOKEN:
         send_full_report(full_analysis, valid_bets, bankroll, matches_count=len(matches))

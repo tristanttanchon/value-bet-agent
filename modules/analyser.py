@@ -172,12 +172,18 @@ Format exact à respecter (ouvre par ```json et ferme par ```) :
       "edge": 0.0175,
       "confidence": 3,
       "data_reliability": "A",
-      "recommended_stake_pct": 0.018
+      "recommended_stake_pct": 0.018,
+      "analysis": "Analyse détaillée en français, 250 à 400 mots, rédigée en markdown simple. Doit contenir : (1) Contexte du match (compétition, enjeu, forme générale), (2) Points factuels clés (absences, forme récente 5 matchs, H2H), (3) Analyse tactique (duels, style, exploitable), (4) Justification chiffrée de l'edge (prob modèle vs cote marché), (5) Facteurs de risque. Utilise des paragraphes séparés par une ligne vide. Tu peux utiliser **gras** pour les points importants, des listes avec - pour les puces, et ## pour des sous-titres (ex: ## Forme récente, ## Facteurs clés, ## Risques). Évite les tableaux markdown (non supportés). Cette analyse sera publiée publiquement pour que l'utilisateur puisse comprendre la recommandation."
     }
   ],
   "no_value_matches": ["match1", "match2"]
 }
 ```
+
+IMPORTANT — Champ `analysis` : obligatoire pour chaque pari recommandé.
+C'est ce texte qui sera publié sur Telegraph comme page détaillée consultable
+par l'utilisateur. Il doit être autonome (compréhensible sans le reste du rapport),
+factuel, chiffré, et justifier clairement pourquoi ce pari a de la value.
 
 Si aucun pari avec edge ≥ 3%, "recommended_bets" = [].
 Mais sur 19+ matchs, trouver 0 paris signifie que tu es trop conservateur —

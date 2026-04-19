@@ -83,6 +83,10 @@ def send_full_report(full_analysis: str, bets: list[dict], bankroll: dict, match
             lines.append(f"✅ *{match}*")
             lines.append(f"   `{market}` @ *{odds}*  ·  edge *{edge_pct:.1f}%*  ·  {stars}")
             lines.append(f"   Mise : {stake:.2f}€")
+            # Lien vers l'analyse détaillée sur Telegraph (si dispo)
+            tg_url = b.get("telegraph_url")
+            if tg_url:
+                lines.append(f"   📖 [Analyse détaillée]({tg_url})")
             lines.append("")
     else:
         lines.append("❌ *Aucun pari recommandé*")
