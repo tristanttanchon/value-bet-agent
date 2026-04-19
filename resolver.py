@@ -59,9 +59,11 @@ def _normalize(s: str) -> str:
 
 def fetch_scores(sport_key: str) -> list[dict]:
     url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/scores/"
+    # IMPORTANT : daysFrom doit être entre 1 et 3 sinon The Odds API
+    # ignore silencieusement le paramètre et ne renvoie que les upcoming.
     params = {
         "apiKey": _current_key(),
-        "daysFrom": 5,
+        "daysFrom": 3,
         "dateFormat": "iso",
     }
     try:
@@ -93,6 +95,8 @@ def get_all_results() -> dict[str, dict]:
     results = {}
     for sport_key in config.COMPETITION_KEYS:
         games = fetch_scores(sport_key)
+        if games:
+            print(f"[Resolver] {sport_key} → {len(games)} match(s) terminé(s)")
         for game in games:
             home = game["home_team"]
             away = game["away_team"]
