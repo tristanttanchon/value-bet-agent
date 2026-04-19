@@ -62,8 +62,21 @@ def get_todays_matches() -> list[dict]:
                     return matches
 
             if resp.status_code == 422:
-                # Compétition non disponible dans le plan
-                continue
+                # Compétition ou marché non disponible dans le plan
+                body = resp.text[:200] if resp.text else ""
+                print(f"[Fetcher] {sport_key} → HTTP 422 (markets={markets_str}) : {body}")
+                # Fallback : si premium, réessayer en h2h seul pour au moins récupérer le 1X2
+                if is_premium and markets_str != "h2h":
+                    print(f"[Fetcher] {sport_key} → fallback h2h uniquement")
+                    params["markets"] = "h2h"
+                    resp = requests.get(url, params=params, timeout=10)
+                    if resp.status_code != 200:
+                        print(f"[Fetcher] {sport_key} → fallback aussi KO : HTTP {resp.status_code}")
+                        continue
+                    # Marquer comme non-premium pour la suite du parsing
+                    is_premium = False
+                else:
+                    continue
             if resp.status_code == 429:
                 print(f"[Fetcher] {sport_key} → HTTP 429 (rate limit), pause 2s...")
                 time.sleep(2)
@@ -72,7 +85,10 @@ def get_todays_matches() -> list[dict]:
                 print(f"[Fetcher] {sport_key} → HTTP {resp.status_code}")
                 continue
 
+            games_today = 0
+            games_total = 0
             for game in resp.json():
+                games_total += 1
                 commence = game.get("commence_time", "")
                 if not commence.startswith(today):
                     continue
@@ -132,6 +148,12 @@ def get_todays_matches() -> list[dict]:
                     "date": today,
                     "odds": best_odds,
                 })
+                games_today += 1
+
+            # Log par compétition : utile pour diagnostiquer l'absence de matchs premium
+            if is_premium or games_today > 0:
+                tag = " [PREMIUM]" if is_premium else ""
+                print(f"[Fetcher] {sport_key}{tag} → {games_today}/{games_total} match(s) aujourd'hui")
 
         except requests.exceptions.Timeout:
             print(f"[Fetcher] Timeout pour {sport_key}")
