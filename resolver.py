@@ -3,6 +3,7 @@ resolver.py — Résolution automatique des paris en attente via Supabase.
 """
 
 import requests
+import unicodedata
 from datetime import date
 import config
 from modules.db import get_client
@@ -11,22 +12,75 @@ from modules.telegram_reporter import send_message
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# État global de rotation des clés Odds API (partagé entre les appels)
+# ─────────────────────────────────────────────────────────────────────────────
+_odds_keys: list[str] = []
+_odds_key_index: int = 0
+
+
+def _init_keys() -> None:
+    global _odds_keys, _odds_key_index
+    if _odds_keys:
+        return
+    keys = list(config.ODDS_API_KEYS) if config.ODDS_API_KEYS else []
+    if not keys and config.ODDS_API_KEY:
+        keys = [config.ODDS_API_KEY]
+    _odds_keys = keys
+    _odds_key_index = 0
+    print(f"[Resolver] {len(_odds_keys)} clé(s) Odds API disponible(s).")
+
+
+def _current_key() -> str | None:
+    if not _odds_keys or _odds_key_index >= len(_odds_keys):
+        return None
+    return _odds_keys[_odds_key_index]
+
+
+def _rotate_key() -> bool:
+    """Passe à la clé suivante. Retourne True si dispo, False si toutes épuisées."""
+    global _odds_key_index
+    _odds_key_index += 1
+    if _odds_key_index < len(_odds_keys):
+        print(f"[Resolver] Rotation vers clé Odds #{_odds_key_index + 1}...")
+        return True
+    print(f"[Resolver] Toutes les clés Odds API sont épuisées.")
+    return False
+
+
+def _normalize(s: str) -> str:
+    """Retire accents et met en lowercase pour matcher les noms d'équipes."""
+    nfkd = unicodedata.normalize("NFKD", s or "")
+    return "".join(c for c in nfkd if not unicodedata.combining(c)).lower().strip()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 1. Récupération des résultats
 # ─────────────────────────────────────────────────────────────────────────────
 
 def fetch_scores(sport_key: str) -> list[dict]:
     url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/scores/"
-    # Rotation multi-clés Odds API
-    keys = list(config.ODDS_API_KEYS) if config.ODDS_API_KEYS else []
-    api_key = keys[0] if keys else config.ODDS_API_KEY
     params = {
-        "apiKey": api_key,
+        "apiKey": _current_key(),
         "daysFrom": 5,
         "dateFormat": "iso",
     }
     try:
         resp = requests.get(url, params=params, timeout=10)
+        # Clé épuisée / invalide → rotation et retry
+        while resp.status_code == 401:
+            print(f"[Resolver] Clé Odds #{_odds_key_index + 1} épuisée ou invalide (401) sur {sport_key}.")
+            if not _rotate_key():
+                return []
+            params["apiKey"] = _current_key()
+            resp = requests.get(url, params=params, timeout=10)
+        if resp.status_code == 429:
+            print(f"[Resolver] {sport_key} → 429 (rate limit)")
+            return []
+        if resp.status_code == 422:
+            # Compétition non dispo dans le plan — silencieux
+            return []
         if resp.status_code != 200:
+            print(f"[Resolver] {sport_key} → HTTP {resp.status_code}")
             return []
         return [g for g in resp.json() if g.get("completed")]
     except Exception as e:
@@ -35,6 +89,7 @@ def fetch_scores(sport_key: str) -> list[dict]:
 
 
 def get_all_results() -> dict[str, dict]:
+    _init_keys()
     results = {}
     for sport_key in config.COMPETITION_KEYS:
         games = fetch_scores(sport_key)
@@ -51,7 +106,8 @@ def get_all_results() -> dict[str, dict]:
                     away_score = int(s["score"])
 
             if home_score is not None and away_score is not None:
-                key = f"{home} vs {away}".lower().strip()
+                # Clé normalisée (sans accents, lowercase) pour matching robuste
+                key = _normalize(f"{home} vs {away}")
                 results[key] = {
                     "home": home,
                     "away": away,
@@ -64,13 +120,14 @@ def get_all_results() -> dict[str, dict]:
 
 
 def find_result(bet_match: str, results: dict) -> dict | None:
-    key = bet_match.lower().strip()
+    key = _normalize(bet_match)
     if key in results:
         return results[key]
 
+    # Match approximatif sur des noms partiels (ex: "Man United" dans "Manchester United")
     for result_key, result in results.items():
-        home = result["home"].lower()
-        away = result["away"].lower()
+        home = _normalize(result["home"])
+        away = _normalize(result["away"])
         parts = key.split(" vs ")
         if len(parts) == 2:
             bet_home = parts[0].strip()
