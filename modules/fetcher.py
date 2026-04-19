@@ -33,8 +33,10 @@ def get_todays_matches() -> list[dict]:
     for sport_key in config.COMPETITION_KEYS:
         try:
             is_premium = sport_key in premium_set
-            # Premium : on récupère aussi Over/Under 2.5 et BTTS
-            markets_str = "h2h,totals,btts" if is_premium else "h2h"
+            # Premium : on récupère aussi Over/Under 2.5 (totals)
+            # Note : `btts` n'est PAS supporté sur l'endpoint bulk /sports/{key}/odds
+            # (seulement via /events/{id}/odds, trop cher en crédits)
+            markets_str = "h2h,totals" if is_premium else "h2h"
             url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/"
             params = {
                 "apiKey": keys[current_key_index],
@@ -70,6 +72,12 @@ def get_todays_matches() -> list[dict]:
                     print(f"[Fetcher] {sport_key} → fallback h2h uniquement")
                     params["markets"] = "h2h"
                     resp = requests.get(url, params=params, timeout=10)
+                    # Rotation de clé si le fallback tombe sur un 401
+                    if resp.status_code == 401 and current_key_index + 1 < len(keys):
+                        current_key_index += 1
+                        print(f"[Fetcher] Fallback → rotation clé #{current_key_index+1}")
+                        params["apiKey"] = keys[current_key_index]
+                        resp = requests.get(url, params=params, timeout=10)
                     if resp.status_code != 200:
                         print(f"[Fetcher] {sport_key} → fallback aussi KO : HTTP {resp.status_code}")
                         continue
