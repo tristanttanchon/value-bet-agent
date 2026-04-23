@@ -8,6 +8,16 @@ from datetime import datetime, timezone
 import config
 
 
+# Statut du dernier appel — consulté par main.py pour envoyer les bonnes alertes
+# Valeurs possibles : "ok" | "keys_exhausted" | "no_keys_configured" | "no_matches_today"
+_last_status: str = "ok"
+
+
+def get_last_status() -> str:
+    """Retourne le statut du dernier appel à get_todays_matches()."""
+    return _last_status
+
+
 def get_todays_matches() -> list[dict]:
     """
     Retourne la liste des matchs programmés aujourd'hui avec leurs meilleures cotes.
@@ -16,6 +26,9 @@ def get_todays_matches() -> list[dict]:
     Supporte la rotation automatique de plusieurs clés API : si la clé active
     est épuisée (401/OUT_OF_USAGE_CREDITS), bascule sur la suivante.
     """
+    global _last_status
+    _last_status = "ok"  # reset à chaque appel
+
     today = datetime.now(timezone.utc).date().isoformat()
     matches = []
 
@@ -23,6 +36,7 @@ def get_todays_matches() -> list[dict]:
     keys = list(config.ODDS_API_KEYS) if config.ODDS_API_KEYS else ([config.ODDS_API_KEY] if config.ODDS_API_KEY else [])
     if not keys:
         print("[Fetcher] Aucune clé ODDS_API_KEY configurée.")
+        _last_status = "no_keys_configured"
         return []
 
     current_key_index = 0
@@ -58,9 +72,11 @@ def get_todays_matches() -> list[dict]:
                     resp = requests.get(url, params=params, timeout=10)
                     if resp.status_code == 401:
                         print(f"[Fetcher] Clé #{current_key_index+1} aussi épuisée. Arrêt.")
+                        _last_status = "keys_exhausted"
                         return matches
                 else:
                     print("[Fetcher] Toutes les clés sont épuisées.")
+                    _last_status = "keys_exhausted"
                     return matches
 
             if resp.status_code == 422:
@@ -180,6 +196,10 @@ def get_todays_matches() -> list[dict]:
         f"[Fetcher] Matchs premium : {len(premium_matches)} "
         f"(avec Over/Under 2.5 : {with_totals}, avec BTTS : {with_btts})"
     )
+
+    # Si aucun match trouvé mais l'API a répondu : vraie journée creuse (pas un problème de clé)
+    if not matches and _last_status == "ok":
+        _last_status = "no_matches_today"
 
     return matches
 

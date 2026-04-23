@@ -11,7 +11,7 @@ Usage :
 
 import sys
 import config
-from modules.fetcher import get_todays_matches, format_matches_for_prompt
+from modules.fetcher import get_todays_matches, format_matches_for_prompt, get_last_status
 from modules.analyser import analyse_matches
 from modules.decision_engine import filter_and_size_bets
 from modules.simulation import load_bankroll, record_bets, resolve_bet
@@ -63,7 +63,33 @@ def run_analysis() -> None:
     matches = get_todays_matches()
 
     if not matches:
-        print("  → Aucun match trouvé aujourd'hui. Fin de l'analyse.")
+        status = get_last_status()
+        print(f"  → Aucun match trouvé aujourd'hui (status={status}). Fin de l'analyse.")
+
+        # Alerte Telegram selon la raison
+        if config.TELEGRAM_BOT_TOKEN:
+            from modules.telegram_reporter import send_message
+            if status == "keys_exhausted":
+                send_message(
+                    "🚨 *QUOTAS ODDS API ÉPUISÉS*\n\n"
+                    "Toutes les clés The Odds API configurées sont à court de crédits.\n\n"
+                    "📅 Prochain reset automatique : *1er du mois à 00h UTC*.\n\n"
+                    "💡 Pour relancer plus tôt, ajoute une nouvelle clé gratuite sur "
+                    "https://the-odds-api.com et colle-la dans le secret GitHub "
+                    "`ODDS_API_KEY` (séparée par une virgule)."
+                )
+            elif status == "no_keys_configured":
+                send_message(
+                    "⚠️ *Configuration manquante*\n\n"
+                    "Aucune clé `ODDS_API_KEY` configurée dans les secrets GitHub.\n"
+                    "L'analyse ne peut pas démarrer."
+                )
+            else:  # "no_matches_today" ou "ok" sans résultats
+                send_message(
+                    f"😴 *Journée creuse — {__import__('datetime').date.today().isoformat()}*\n\n"
+                    "Aucun match trouvé aujourd'hui sur les 23 compétitions suivies.\n"
+                    "On se retrouve demain 🎯"
+                )
         return
 
     print(f"  → {len(matches)} match(s) trouvé(s)")
