@@ -147,7 +147,7 @@ def run_analysis() -> None:
     # ── 6. Bonus : pronos FUN (score exact, buteurs, cartons) ──────────────
     print("\n[Bonus] Génération des pronos fun...")
     try:
-        fun_message = generate_fun_predictions(matches_text)
+        fun_message = generate_fun_predictions(matches_text, matches=matches)
         if fun_message and config.TELEGRAM_BOT_TOKEN:
             send_message(fun_message)
             print("  → Message fun envoyé sur Telegram.")

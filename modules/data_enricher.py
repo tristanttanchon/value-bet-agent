@@ -7,8 +7,10 @@ Rotation multi-clés (4 clés × 100 req = 400 req/jour → tous les matchs).
 Cache des team IDs pour éviter les lookups dupliqués.
 """
 
+import json
 import requests
 from datetime import date
+from pathlib import Path
 import config
 
 
@@ -19,8 +21,15 @@ _team_id_cache: dict[str, int | None] = {}
 
 # Gestion multi-clés avec rotation
 _current_key_index = 0
-_request_count = 0
-QUOTA_PER_KEY = 95  # marge de sécurité sur les 100/clé
+_request_count = 0           # requêtes faites sur la clé courante
+_total_requests_made = 0     # total réel cumulé sur toutes les clés (pour log)
+QUOTA_PER_KEY = 95           # marge de sécurité sur les 100/clé
+
+# Cap de matchs enrichis pour préserver le budget API
+MAX_ENRICHED_MATCHES = 15
+
+# Cache disque pour les top buteurs (refresh toutes les 24h)
+TOPSCORERS_CACHE_FILE = config.DATA_DIR / "topscorers_cache.json"
 
 # Ligues prioritaires pour l'enrichissement (les plus fiables en données)
 PRIORITY_LEAGUES = [
@@ -52,6 +61,17 @@ def _rotate_key() -> bool:
     print(f"[Enricher] Rotation vers clé API-Football #{_current_key_index + 1}/{len(keys)}")
     return True
 
+
+def _european_season() -> int:
+    """
+    Retourne l'année de DÉBUT de la saison européenne (août → mai).
+    Ex : avril 2026 → saison 2025-2026 → renvoie 2025.
+    Pour Brésil/Argentine (calendrier civil) c'est moins précis mais
+    API-Football reste tolérant et retourne quelque chose d'utile.
+    """
+    today = date.today()
+    return today.year if today.month >= 7 else today.year - 1
+
 # Correspondance compétition → league_id API-Football
 LEAGUE_IDS = {
     "soccer_epl": 39,
@@ -82,7 +102,7 @@ LEAGUE_IDS = {
 
 def _get(endpoint: str, params: dict) -> dict | None:
     """Appel API-Football avec rotation multi-clés et compteur de quota."""
-    global _request_count
+    global _request_count, _total_requests_made
 
     current_key = _get_current_key()
     if not current_key:
@@ -109,6 +129,7 @@ def _get(endpoint: str, params: dict) -> dict | None:
             timeout=10,
         )
         _request_count += 1
+        _total_requests_made += 1
         if resp.status_code == 200:
             return resp.json()
         if resp.status_code == 429:
@@ -121,6 +142,106 @@ def _get(endpoint: str, params: dict) -> dict | None:
     except Exception as e:
         print(f"[Enricher] Erreur API-Football ({endpoint}) : {e}")
         return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Top buteurs par ligue (utilisé par fun_predictor)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _load_topscorers_cache() -> dict:
+    if not TOPSCORERS_CACHE_FILE.exists():
+        return {}
+    try:
+        with open(TOPSCORERS_CACHE_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"[Enricher] Cache topscorers illisible : {e}")
+        return {}
+
+
+def _save_topscorers_cache(cache: dict) -> None:
+    try:
+        TOPSCORERS_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(TOPSCORERS_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[Enricher] Sauvegarde cache topscorers KO : {e}")
+
+
+def _fetch_top_scorers(league_id: int, season: int, top_n: int = 15) -> list[dict]:
+    """Top N buteurs d'une ligue pour la saison donnée."""
+    data = _get("players/topscorers", {"league": league_id, "season": season})
+    if not data or not data.get("response"):
+        return []
+
+    out = []
+    for item in data["response"][:top_n]:
+        player = item.get("player") or {}
+        stats = (item.get("statistics") or [{}])[0]
+        team = (stats.get("team") or {}).get("name", "")
+        goals = (stats.get("goals") or {}).get("total", 0)
+        if not player.get("name") or goals is None:
+            continue
+        out.append({
+            "name": player["name"],
+            "team": team,
+            "goals": goals,
+        })
+    return out
+
+
+def get_top_scorers_for_competitions(competition_names: list[str]) -> dict[str, list[dict]]:
+    """
+    Pour chaque compétition fournie, retourne la liste des top buteurs
+    (cachée 24h sur disque pour limiter la conso API-Football).
+
+    Renvoie : { "Premier League": [{"name", "team", "goals"}, ...], ... }
+    """
+    if not config.API_FOOTBALL_KEY:
+        return {}
+
+    today = date.today().isoformat()
+    season = _european_season()
+    cache = _load_topscorers_cache()
+    today_bucket = cache.get(today, {})
+
+    # Map nom compétition → sport_key (clef inverse)
+    comp_to_sport = {v: k for k, v in config.COMPETITION_NAMES.items()}
+
+    result: dict[str, list[dict]] = {}
+    new_fetches = 0
+
+    for comp_name in competition_names:
+        sport_key = comp_to_sport.get(comp_name)
+        if not sport_key:
+            continue
+        league_id = LEAGUE_IDS.get(sport_key)
+        if not league_id:
+            continue
+
+        cache_key = str(league_id)
+        cached = today_bucket.get(cache_key)
+        if cached is not None:
+            result[comp_name] = cached
+            continue
+
+        # Cache miss → fetch
+        scorers = _fetch_top_scorers(league_id, season)
+        today_bucket[cache_key] = scorers
+        result[comp_name] = scorers
+        new_fetches += 1
+
+    # Purge des dates anciennes (garde uniquement aujourd'hui)
+    cache = {today: today_bucket}
+    _save_topscorers_cache(cache)
+
+    if new_fetches > 0:
+        print(f"[Enricher] Top buteurs : {new_fetches} ligue(s) fetched, "
+              f"{len(result) - new_fetches} servies depuis le cache.")
+    else:
+        print(f"[Enricher] Top buteurs : {len(result)} ligue(s) servies depuis le cache.")
+
+    return result
 
 
 def get_team_id(team_name: str) -> int | None:
@@ -244,15 +365,16 @@ def enrich_matches(matches: list[dict]) -> str:
     """
     Enrichit les matchs du jour avec des données fraîches.
     Priorise les top ligues et limite à MAX_ENRICHED_MATCHES pour
-    rester dans le quota gratuit (100 req/jour).
+    rester dans le quota gratuit (100 req/jour/clé).
     """
-    global _request_count, _current_key_index
+    global _request_count, _current_key_index, _total_requests_made
     if not config.API_FOOTBALL_KEY:
         return ""
 
     # Reset compteurs
     _request_count = 0
     _current_key_index = 0
+    _total_requests_made = 0
     n_keys = len(config.API_FOOTBALL_KEYS)
     total_quota = n_keys * QUOTA_PER_KEY
 
@@ -264,6 +386,13 @@ def enrich_matches(matches: list[dict]) -> str:
         return 999
 
     sorted_matches = sorted(matches, key=priority_sort)
+
+    # Cap pour préserver le budget API
+    if len(sorted_matches) > MAX_ENRICHED_MATCHES:
+        skipped = len(sorted_matches) - MAX_ENRICHED_MATCHES
+        sorted_matches = sorted_matches[:MAX_ENRICHED_MATCHES]
+        print(f"[Enricher] Cap à {MAX_ENRICHED_MATCHES} matchs prioritaires "
+              f"({skipped} match(s) hors top ligues ignorés pour économiser le quota).")
 
     print(f"[Enricher] {n_keys} clé(s) API-Football ({total_quota} req max)")
     print(f"[Enricher] Enrichissement de {len(sorted_matches)} match(s) (top ligues en priorité)...")
@@ -368,8 +497,9 @@ def enrich_matches(matches: list[dict]) -> str:
 
         lines.append("")
 
-    total_used = (_current_key_index * QUOTA_PER_KEY) + _request_count
     n_keys = len(config.API_FOOTBALL_KEYS)
+    keys_used = _current_key_index + 1 if _request_count > 0 else _current_key_index
     print(f"[Enricher] Terminé — {enriched_count} match(s) enrichi(s), "
-          f"~{total_used} requête(s) utilisée(s) sur {n_keys} clé(s).")
+          f"{_total_requests_made} requête(s) réelles utilisées "
+          f"sur {keys_used}/{n_keys} clé(s).")
     return "\n".join(lines)

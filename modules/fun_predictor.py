@@ -51,13 +51,26 @@ Pour chaque match sélectionné, fournis des prédictions FUN :
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+🚨 RÈGLE ABSOLUE SUR LES NOMS DE JOUEURS 🚨
+
+Ta connaissance des effectifs date d'avant 2025 → tu vas inventer des joueurs
+qui ne sont plus dans leur club si tu ne fais pas attention.
+
+→ Pour citer un buteur, tu DOIS utiliser EXCLUSIVEMENT la liste **TOP BUTEURS
+  ACTUELS** fournie ci-dessous (saison en cours, données API-Football vérifiées).
+→ Si l'équipe d'un match n'est pas dans la liste : reste générique
+  ("un attaquant", "le n°9", "un milieu offensif") — ne cite JAMAIS un nom
+  que tu n'as pas vu dans la liste.
+→ Pour les prédictions carton rouge / passeur / scénario bonus : même règle,
+  cite uniquement des joueurs présents dans la liste, ou reste générique.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 TON DE RÉDACTION
 
 Sois dans le fun, un peu exagéré, accroche-cœur. Utilise des emojis. Donne
-ton intuition même si elle est risquée — c'est fait pour ça !
-
-Utilise ta connaissance des joueurs actuels (stars, meilleurs buteurs, formes
-récentes, historique de cartons, styles d'équipes).
+ton intuition même si elle est risquée — c'est fait pour ça ! Mais reste
+factuel sur les NOMS de joueurs (cf. règle ci-dessus).
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -90,21 +103,64 @@ _Pour rire, pas pour parier !_
 """
 
 
-def build_fun_prompt(matches_text: str) -> str:
+def _format_topscorers_block(top_scorers: dict[str, list[dict]]) -> str:
+    """Formate les top buteurs par compétition pour injection dans le prompt."""
+    if not top_scorers:
+        return ""
+
+    lines = [
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "TOP BUTEURS ACTUELS — saison en cours (source : API-Football)",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+    ]
+    for comp, scorers in top_scorers.items():
+        if not scorers:
+            continue
+        lines.append(f"🏆 {comp}")
+        for s in scorers:
+            lines.append(f"   - {s['name']}  ({s['team']})  →  {s['goals']} buts")
+        lines.append("")
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def build_fun_prompt(matches_text: str, top_scorers: dict[str, list[dict]] | None = None) -> str:
     today = date.today().strftime("%d/%m/%Y")
+    scorers_block = _format_topscorers_block(top_scorers or {})
     return (
         f"DATE : {today}\n\n"
         f"MATCHS DU JOUR :\n\n{matches_text}\n\n"
+        f"{scorers_block}"
         f"{FUN_PROMPT}"
     )
 
 
-def generate_fun_predictions(matches_text: str) -> str | None:
+def generate_fun_predictions(matches_text: str, matches: list[dict] | None = None) -> str | None:
     """
     Génère un message Telegram contenant les pronos fun pour les top 5 matchs.
+
+    Args:
+        matches_text : texte formaté des matchs du jour (pour le prompt).
+        matches      : liste brute des matchs (sert à détecter les ligues
+                       distinctes pour pré-fetch des top buteurs réels).
+
     Retourne le message prêt à envoyer, ou None en cas d'échec.
     """
-    prompt = build_fun_prompt(matches_text)
+    # Pré-fetch des top buteurs (cachés 24h sur disque)
+    top_scorers: dict[str, list[dict]] = {}
+    if matches and config.API_FOOTBALL_KEY:
+        try:
+            from modules.data_enricher import get_top_scorers_for_competitions
+            distinct_comps = sorted({m.get("competition", "") for m in matches if m.get("competition")})
+            top_scorers = get_top_scorers_for_competitions(distinct_comps)
+            print(f"[FunPredictor] Top buteurs récupérés pour {len(top_scorers)} ligue(s).")
+        except Exception as e:
+            print(f"[FunPredictor] Pré-fetch top buteurs KO (non bloquant) : {e}")
+
+    prompt = build_fun_prompt(matches_text, top_scorers)
 
     gemini_keys = list(config.GEMINI_API_KEYS) if config.GEMINI_API_KEYS else []
     if not gemini_keys:
