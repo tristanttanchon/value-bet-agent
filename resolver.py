@@ -1,14 +1,16 @@
 """
-resolver.py — Résolution automatique des paris en attente via Supabase.
+resolver.py — Résolution automatique des pronos en attente via Supabase.
+
+Mode pronostiqueur : pas de bankroll, pas de P&L.
+On marque juste WIN / LOSS / PUSH pour pouvoir calculer le winrate.
 """
 
 import requests
 import unicodedata
-from datetime import date
 import config
 from modules.db import get_client
-from modules.simulation import load_bankroll, save_bankroll
 from modules.telegram_reporter import send_message
+from modules.winrate_tracker import get_winrate_stats
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -143,20 +145,35 @@ def find_result(bet_match: str, results: dict) -> dict | None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2. Calcul du résultat d'un pari
+# 2. Calcul du résultat d'un prono
 # ─────────────────────────────────────────────────────────────────────────────
 
 def determine_outcome(market: str, home_score: int, away_score: int) -> str | None:
-    market = market.strip()
+    """
+    Retourne "WIN", "LOSS" ou "PUSH" pour les marchés supportés en mode
+    pronostiqueur :
+      - 1X2          : 1 / X / 2
+      - Over/Under   : Over 2.5 / Under 2.5
+      - Double chance: 1X / 12 / X2
+    Marchés legacy (BTTS, AH0, DNB) gardés pour résolution rétroactive.
+    """
+    market = (market or "").strip()
     total = home_score + away_score
-
     btts_yes = home_score > 0 and away_score > 0
+
     outcomes = {
+        # 1X2
         "1": "WIN" if home_score > away_score else "LOSS",
         "X": "WIN" if home_score == away_score else "LOSS",
         "2": "WIN" if away_score > home_score else "LOSS",
+        # Over / Under
         "Over 2.5": "WIN" if total > 2.5 else "LOSS",
         "Under 2.5": "WIN" if total < 2.5 else "LOSS",
+        # Double chance
+        "1X": "WIN" if home_score >= away_score else "LOSS",   # home OR draw
+        "12": "WIN" if home_score != away_score else "LOSS",   # no draw
+        "X2": "WIN" if away_score >= home_score else "LOSS",   # away OR draw
+        # BTTS (legacy)
         "BTTS": "WIN" if btts_yes else "LOSS",
         "BTTS Yes": "WIN" if btts_yes else "LOSS",
         "BTTS No": "WIN" if not btts_yes else "LOSS",
@@ -177,7 +194,7 @@ def determine_outcome(market: str, home_score: int, away_score: int) -> str | No
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. Mise à jour Supabase et bankroll
+# 3. Mise à jour Supabase (winrate uniquement)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def resolve_pending_bets(results: dict) -> tuple[int, int, int]:
@@ -186,11 +203,10 @@ def resolve_pending_bets(results: dict) -> tuple[int, int, int]:
     pending = resp.data or []
 
     if not pending:
-        print("[Resolver] Aucun pari PENDING.")
+        print("[Resolver] Aucun prono PENDING.")
         return 0, 0, 0
 
     resolved = wins = losses = pushes = 0
-    bankroll = load_bankroll()
 
     for row in pending:
         result = find_result(row["match"], results)
@@ -201,49 +217,28 @@ def resolve_pending_bets(results: dict) -> tuple[int, int, int]:
         if outcome is None:
             continue
 
-        stake = float(row["sim_stake"] or 0)
-        odds = float(row["market_odds"] or 0)
-
         if outcome == "WIN":
-            profit = round(stake * odds - stake, 2)
-            bankroll["wins"] += 1
-            bankroll["total_returned"] = round(bankroll.get("total_returned", 0) + stake * odds, 2)
             wins += 1
         elif outcome == "PUSH":
-            profit = 0.0
-            bankroll["total_returned"] = round(bankroll.get("total_returned", 0) + stake, 2)
             pushes += 1
         else:
-            profit = -stake
-            bankroll["losses"] += 1
             losses += 1
-
-        bankroll["current"] = round(bankroll["current"] + profit, 2)
-        bankroll["reserved"] = round(bankroll.get("reserved", 0) - stake, 2)
-        bankroll["pending"] -= 1
 
         db.table("bets").update({
             "status": outcome,
             "result": f"{result['home_score']}-{result['away_score']}",
-            "profit_loss": profit,
-            "bankroll_after": bankroll["current"],
         }).eq("id", row["id"]).execute()
 
-        # Notification Telegram WIN/LOSS
+        # Notification Telegram WIN/LOSS/PUSH (pas de bankroll, pas de P&L)
         if config.TELEGRAM_BOT_TOKEN:
             emoji = "✅" if outcome == "WIN" else ("↩️" if outcome == "PUSH" else "❌")
-            pl_str = f"{profit:+.2f}€" if outcome != "PUSH" else "Remboursé"
             send_message(
                 f"{emoji} *{outcome}* — {row['match']}\n"
-                f"Marché : `{row['market']}` @ `{row['market_odds']}`\n"
-                f"Score : {result['home_score']}-{result['away_score']}  |  P&L : *{pl_str}*\n"
-                f"Bankroll : *{bankroll['current']:.2f}€*"
+                f"Marché : `{row['market']}`  @  *{row['market_odds']}*\n"
+                f"Score final : *{result['home_score']}-{result['away_score']}*"
             )
 
         resolved += 1
-
-    if resolved > 0:
-        save_bankroll(bankroll)
 
     return resolved, wins, losses
 
@@ -253,7 +248,7 @@ def resolve_pending_bets(results: dict) -> tuple[int, int, int]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_resolver() -> None:
-    print("\n Résolution automatique des paris en attente...")
+    print("\n🔎 Résolution automatique des pronos en attente...")
 
     results = get_all_results()
     if not results:
@@ -263,12 +258,25 @@ def run_resolver() -> None:
     resolved, wins, losses = resolve_pending_bets(results)
 
     if resolved == 0:
-        print("[Resolver] Aucun pari résolu (résultats pas encore disponibles ou aucun PENDING).")
-    else:
-        bankroll = load_bankroll()
-        pl = bankroll["current"] - bankroll["initial"]
-        print(f"\n {resolved} pari(s) résolu(s) : {wins} WIN  {losses} LOSS")
-        print(f"   Bankroll : {bankroll['current']:.2f}€  ({pl:+.2f}€ depuis le début)")
+        print("[Resolver] Aucun prono résolu (résultats pas encore disponibles ou aucun PENDING).")
+        return
+
+    print(f"\n✅ {resolved} prono(s) résolu(s) : {wins}W / {losses}L")
+
+    stats = get_winrate_stats(days=30)
+    print(
+        f"   Winrate 30j : {stats['winrate_pct']:.1f}%  "
+        f"({stats['wins']}W / {stats['losses']}L  |  {stats['pending']} en attente)"
+    )
+
+    # Récap Telegram global (1 seul message après toutes les notifs unitaires)
+    if config.TELEGRAM_BOT_TOKEN and resolved > 0:
+        send_message(
+            f"📊 *Résolution terminée*\n"
+            f"Résolus aujourd'hui : *{wins}W / {losses}L*\n"
+            f"Winrate 30j : *{stats['winrate_pct']:.0f}%*  "
+            f"({stats['wins']}W / {stats['losses']}L)"
+        )
 
 
 if __name__ == "__main__":

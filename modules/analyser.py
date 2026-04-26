@@ -1,6 +1,10 @@
 """
-Analyser — envoie les matchs du jour à Gemini 2.0 Flash (gratuit) avec le master prompt v2.0.
-Récupère l'analyse complète + le JSON structuré des paris recommandés.
+Analyser — envoie les matchs du jour à Gemini 2.5 Flash avec le master prompt
+Pronostiqueur. Retourne 4-5 pronos avec fort taux de confiance, 1 par match,
+sur les marchés 1X2, Over/Under 2.5 et Double Chance.
+
+Pas de calcul d'edge, pas de Kelly, pas de bankroll — juste des prédictions
+argumentées que l'utilisateur suivra ou non.
 """
 
 import re
@@ -25,181 +29,145 @@ class GeminiTimeout(Exception):
 def _timeout_handler(signum, frame):
     raise GeminiTimeout("Appel Gemini timeout après 5 minutes")
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# MASTER PROMPT V2.0
+# MASTER PROMPT — PRONOSTIQUEUR
 # ─────────────────────────────────────────────────────────────────────────────
 
 MASTER_PROMPT = """
-Tu es un Senior Football Data Scientist et Value Betting Expert.
-Ta mission est de trouver des edges exploitables en comparant tes estimations
-de probabilités aux cotes du marché. Tu es méthodique, factuel, et tu cherches
-activement la value — un edge de 3% bien fondé est jouable.
+Tu es un Expert Pronostiqueur Football réputé pour ton taux de réussite élevé.
+Ta mission : sélectionner les 4 à 5 MEILLEURS pronostics du jour parmi les matchs
+fournis. Un seul pronostic par match — celui sur lequel tu es le plus confiant.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-RÈGLE ABSOLUE : Tu dois analyser CHAQUE match de la liste fournie, sans exception.
-Pour CHAQUE match, explore TOUS les marchés disponibles (1X2, Over/Under 2.5, BTTS)
-et calcule un edge pour chacun. Ne te limite pas à un seul marché par match.
-Un edge ≥ 3% = value jouable. Un edge ≥ 7% = value forte.
+OBJECTIF : VISER UN TAUX DE RÉUSSITE ÉLEVÉ (> 65%)
+
+Tu n'es pas là pour chasser la grosse cote ou prendre des risques. Tu es là pour
+identifier les pronostics les plus SÛRS possibles. Privilégie systématiquement :
+  • Les favoris très solides à domicile
+  • Les Double Chance quand le match est serré (1X ou X2 réduit le risque)
+  • Les Over/Under 2.5 quand le profil offensif/défensif des deux équipes est clair
+  • Les matchs où tu as des informations fiables (forme, absences, H2H clairs)
+
+Évite absolument :
+  ✗ Les paris "coup de coeur" sans fondement factuel
+  ✗ Les matchs avec trop de données manquantes
+  ✗ Les scénarios improbables (outsider à grosse cote, etc.)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-ÉTAPE 1 — MATCHS DU JOUR (déjà fournis ci-dessus)
-Les matchs, leurs cotes de marché actuelles ET les données enrichies (blessés,
-forme récente, H2H, stats avancées) te sont fournis dans le message.
-Exploite TOUTES ces données pour ton analyse — elles sont récentes et fiables.
+MARCHÉS AUTORISÉS (3 uniquement)
 
-▸ CONTEXTE & ABSENCES
-  — Absences confirmées (blessés, suspendus) et impact tactique réel
-  — Retours de blessure : niveau de forme attendu, titulaire ou entrant ?
-  — Contexte : enjeu, fatigue, rotations probables en coupe
-  — Changements récents de staff/entraîneur
-  — Profondeur du banc par poste
+1. **1X2** (issue du match)
+   • "1" = victoire équipe domicile
+   • "X" = match nul
+   • "2" = victoire équipe extérieur
 
-▸ H2H — CONFRONTATIONS DIRECTES
-  — 5 derniers face-à-face : scores, contexte, buts
-  — Équipe historiquement dominante
-  — Tendance buts dans ce H2H
+2. **Over/Under 2.5 buts**
+   • "Over 2.5"  = 3 buts ou plus dans le match
+   • "Under 2.5" = 2 buts ou moins dans le match
 
-▸ FORME RÉCENTE
-  — 5 derniers matchs de chaque équipe avec scores et contexte
-  — Comportement domicile vs extérieur (10 derniers matchs)
-  — Stats first half / second half
-
-▸ CONDITIONS EXTÉRIEURES
-  — Météo prévue et impact potentiel sur le jeu
-
-▸ STATISTIQUES AVANCÉES (données fournies dans le prompt)
-  — xG et xGA moyens déjà fournis → analyse la sur/sous-performance
-  — Forme des 5 derniers matchs fournie → tire des conclusions concrètes
-  — H2H fourni → identifie les patterns historiques
-  — Blessés fournis → évalue l'impact tactique réel sur chaque poste
-  — Utilise ta connaissance des équipes pour compléter (style de jeu, pressing, etc.)
+3. **Double Chance** (deux issues possibles couvertes)
+   • "1X" = victoire domicile OU nul
+   • "12" = victoire domicile OU victoire extérieur (pas de nul)
+   • "X2" = nul OU victoire extérieur
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-ÉTAPE 2 — ANALYSE TACTIQUE
+ÉTAPE 1 — ANALYSE DE CHAQUE MATCH
 
-▸ ANALYSE DE JEU
-  — Systèmes de jeu et circuits de passe attendus
-  — Exploitation des demi-espaces et Zone 14
-  — Qui domine les 30 derniers mètres adverses ?
-  — Pressing : intensité, organisation
-  — Résilience après avoir concédé en premier
-  — Force/Faiblesse sur CPA (coups de pied arrêtés)
-  — Hauteur de ligne défensive
+Pour chaque match fourni, étudie :
+  • Forme récente (5 derniers matchs) des deux équipes
+  • H2H (5 dernières confrontations)
+  • Absences clés (blessés, suspendus) et impact tactique
+  • Contexte (enjeu, fatigue, rotations coupe, motivation)
+  • Style de jeu (offensif/défensif) — utile pour Over/Under
+  • Domicile/extérieur : performances respectives
+  • Cotes du marché (indicateur de probabilité perçue)
 
-▸ DUELS INDIVIDUELS CLÉS
-  — 1 à 2 matchups déterminants et asymétries exploitables
-
-▸ MATCHS DE COUPE
-  — Rotations probables, prolongations/TAB à anticiper
-
-▸ MOUVEMENT DE LIGNES
-  — Comparer cote d'ouverture vs cote actuelle
-  — Baisse de cote malgré afflux grand public = signal sharp money
-
-▸ ANALYSE DE L'ARBITRE
-  — Moyenne cartons/match, tendance penalties, biais domicile
+Exploite les DONNÉES ENRICHIES fournies dans le prompt (blessés, xG, forme API-Football).
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-ÉTAPE 3 — MODÉLISATION & CALCUL DE VALUE
+ÉTAPE 2 — SÉLECTION DES 4-5 MEILLEURS PRONOS
 
-— Calcule tes propres probabilités : prob1 + probX + prob2 = 100%
-— Estime les cotes fair value (1/prob)
-— Compare avec les cotes marché fournies
-— Calcule l'edge : (prob_modèle × cote_marché) − 1
-    · Edge ≥ 3%  → value jouable, RECOMMANDE le pari
-    · Edge ≥ 7%  → value forte, RECOMMANDE avec haute confiance
-    · Edge ≥ 12% → value exceptionnelle
-— IMPORTANT : Analyse CHAQUE marché séparément pour chaque match :
-    · 1X2 (victoire domicile, nul, victoire extérieur)
-    · Over/Under 2.5 buts
-    · BTTS (les deux équipes marquent)
-    · AH0 / Draw No Bet (si pertinent)
-  Un match peut avoir 0, 1 ou PLUSIEURS paris value sur des marchés différents.
-— Closing Line Value : note si la cote semble proche de son plancher
-— Mise Kelly : [edge / (cote − 1)] × 0.25 | plafond absolu 5% du bankroll
+Parmi tous les matchs analysés, sélectionne UNIQUEMENT les 4 à 5 pronostics sur
+lesquels tu as le plus de confiance. Pour chaque match retenu :
+
+  1. Choisis LE SEUL marché où tu es le plus confiant
+  2. Attribue une note de confiance de 1 à 5 étoiles :
+     ⭐        = 1/5 — Faible, à éviter (ne retiens pas ce prono)
+     ⭐⭐       = 2/5 — Moyen, à éviter
+     ⭐⭐⭐      = 3/5 — Correct, jouable avec réserve
+     ⭐⭐⭐⭐     = 4/5 — Fort, recommandé
+     ⭐⭐⭐⭐⭐    = 5/5 — Très fort, haute conviction
+
+  IMPORTANT : ne retiens QUE les pronos notés 3/5 ou plus.
+  Si tu n'as aucun prono ≥ 3/5, renvoie une liste vide.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-ÉTAPE 4 — RAPPORT PAR MATCH
+ÉTAPE 3 — RAPPORT DÉTAILLÉ PAR MATCH RETENU
 
-Pour chaque match :
-  📍 Compétition · Heure · Lieu · Météo
-  ⚔️  H2H (5 derniers face-à-face)
-  🔴 Absences clés et impact tactique
-  📊 Forme récente + stats first/second half
-  🧠 Analyse tactique, duels clés, stats avancées
-  📈 Mouvement de lignes + signal sharp money
-  🧑‍⚖️ Profil arbitre (si pertinent)
-  💰 Tableau de value :
-     Marché | Prob modèle | Cote marché | Edge
-  ✅ Pari recommandé (ou "AUCUN")
-  ⭐ Indice de confiance /5
-  🔒 Fiabilité des données : A / B / C
-  ⚠️  Données manquantes
+Pour chaque prono sélectionné, rédige une analyse complète (250-400 mots) en
+markdown simple. Structure recommandée :
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ## Contexte
+  (Compétition, enjeu, forme générale, classement)
 
-ÉTAPE 5 — RÉCAPITULATIF FINAL
+  ## Forme récente
+  (5 derniers matchs chaque équipe, tendances)
 
-Tableau des paris recommandés classés par edge décroissant.
-Liste des matchs analysés sans value (avec raison courte).
-Données manquantes globales.
+  ## Facteurs clés
+  (Absences, H2H, duels décisifs, conditions)
+
+  ## Pourquoi ce prono
+  (Justification factuelle du choix de marché)
+
+  ## Facteurs de risque
+  (Ce qui pourrait faire perdre ce prono)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-ÉTAPE 6 — SORTIE JSON STRUCTURÉE (À LA FIN DE TA RÉPONSE)
+ÉTAPE 4 — SORTIE JSON STRUCTURÉE (À LA FIN DE TA RÉPONSE)
 
-Après avoir terminé toute ton analyse détaillée ci-dessus, conclus ta réponse
-par un bloc JSON valide résumant les paris recommandés.
+Conclus ta réponse par un bloc JSON valide, délimité par ```json et ```.
 
-Format exact à respecter (ouvre par ```json et ferme par ```) :
+Format EXACT à respecter :
 
 ```json
 {
   "analysis_date": "YYYY-MM-DD",
-  "recommended_bets": [
+  "pronos": [
     {
       "match": "Équipe A vs Équipe B",
       "competition": "Nom compétition",
       "kickoff": "HH:MM",
-      "market": "1|X|2|Over 2.5|Under 2.5|BTTS Yes|BTTS No|AH0",
-      "model_probability": 0.55,
+      "market": "1|X|2|Over 2.5|Under 2.5|1X|12|X2",
       "market_odds": 1.85,
-      "edge": 0.0175,
-      "confidence": 3,
-      "data_reliability": "A",
-      "recommended_stake_pct": 0.018,
-      "analysis": "Analyse détaillée en français, 250 à 400 mots, rédigée en markdown simple. Doit contenir : (1) Contexte du match (compétition, enjeu, forme générale), (2) Points factuels clés (absences, forme récente 5 matchs, H2H), (3) Analyse tactique (duels, style, exploitable), (4) Justification chiffrée de l'edge (prob modèle vs cote marché), (5) Facteurs de risque. Utilise des paragraphes séparés par une ligne vide. Tu peux utiliser **gras** pour les points importants, des listes avec - pour les puces, et ## pour des sous-titres (ex: ## Forme récente, ## Facteurs clés, ## Risques). Évite les tableaux markdown (non supportés). Cette analyse sera publiée publiquement pour que l'utilisateur puisse comprendre la recommandation."
+      "confidence": 4,
+      "analysis": "Analyse markdown complète 250-400 mots avec les sections Contexte / Forme récente / Facteurs clés / Pourquoi ce prono / Facteurs de risque. Utilise **gras** pour les points importants, ## pour les sous-titres, - pour les puces."
     }
   ],
-  "no_value_matches": ["match1", "match2"]
+  "skipped_matches": ["match1 (raison)", "match2 (raison)"]
 }
 ```
 
-IMPORTANT — Champ `analysis` : obligatoire pour chaque pari recommandé.
-C'est ce texte qui sera publié sur Telegraph comme page détaillée consultable
-par l'utilisateur. Il doit être autonome (compréhensible sans le reste du rapport),
-factuel, chiffré, et justifier clairement pourquoi ce pari a de la value.
-
-Si aucun pari avec edge ≥ 3%, "recommended_bets" = [].
-Mais sur 19+ matchs, trouver 0 paris signifie que tu es trop conservateur —
-relis ton analyse et identifie les edges que tu as hésité à jouer.
+Règles :
+  • 4 à 5 éléments dans "pronos" (idéalement 5 pour maximiser la diversité)
+  • Si aucun prono ≥ 3/5 de confiance, renvoie "pronos": []
+  • "market_odds" = la cote du marché choisi telle que fournie (pour info)
+  • "analysis" est OBLIGATOIRE — elle sera publiée sur Telegraph
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 RAPPELS FONDAMENTAUX
-— Les cotes sont le thermomètre, pas le diagnostic.
-— La value naît de l'analyse terrain, des absences et du contexte.
-— Cherche activement la value sur TOUS les marchés de chaque match.
-— Un edge de 3% avec des données fiables (A ou B) est jouable.
-— Ne te réfugie pas derrière "données insuffisantes" — les données API-Football
-  et ta connaissance des équipes suffisent pour estimer des probabilités.
-— Sur 20+ matchs, tu devrais typiquement trouver 3 à 8 paris value.
-  Si tu en trouves 0, c'est probablement que tu es trop conservateur.
+— Tu cherches la FIABILITÉ, pas le gain maximum.
+— Si un match est trop incertain, ne le retiens pas.
+— Un prono à 5⭐ sur un favori solide vaut mieux qu'un prono à 3⭐ sur un outsider.
+— Justifie toujours factuellement (données, forme, absences), jamais "au feeling".
+— Utilise 1 seul marché par match : le plus sûr.
 """
 
 
@@ -209,30 +177,18 @@ RAPPELS FONDAMENTAUX
 
 def build_prompt(matches_text: str) -> str:
     today = date.today().isoformat()
-
-    # Contexte d'apprentissage (historique de performance, blacklist, leçons)
-    try:
-        from modules.learning import build_performance_context
-        learning_context = build_performance_context()
-    except Exception as e:
-        print(f"[Analyser] Contexte d'apprentissage indisponible : {e}")
-        learning_context = ""
-
     return (
         f"ANALYSE DU {today}\n\n"
         f"Voici les matchs du jour avec leurs meilleures cotes de marché :\n\n"
         f"{matches_text}\n"
-        f"{learning_context}\n"
         f"{MASTER_PROMPT}"
     )
 
 
 def extract_json_block(text: str) -> list[dict]:
     """
-    Extrait le bloc JSON structuré de la réponse.
-    Tente plusieurs formats : ```json ... ```, ``` ... ```, puis brace-matching.
+    Extrait la liste `pronos` du bloc JSON structuré renvoyé par Gemini.
     """
-    # Pattern 1 : ```json { ... } ```
     patterns = [
         r"```json\s*(\{.*?\})\s*```",
         r"```JSON\s*(\{.*?\})\s*```",
@@ -243,17 +199,15 @@ def extract_json_block(text: str) -> list[dict]:
         if match:
             try:
                 data = json.loads(match.group(1))
-                return data.get("recommended_bets", [])
+                return data.get("pronos", [])
             except json.JSONDecodeError:
                 continue
 
-    # Pattern 2 : recherche du dernier objet JSON contenant "recommended_bets"
-    idx = text.rfind('"recommended_bets"')
+    # Fallback : recherche du dernier objet contenant "pronos"
+    idx = text.rfind('"pronos"')
     if idx != -1:
-        # Remonte au { d'ouverture
         start = text.rfind('{', 0, idx)
         if start != -1:
-            # Trouve le } fermant correspondant (brace matching)
             depth = 0
             in_string = False
             escape = False
@@ -281,34 +235,29 @@ def extract_json_block(text: str) -> list[dict]:
             if end > start:
                 try:
                     data = json.loads(text[start:end])
-                    return data.get("recommended_bets", [])
+                    return data.get("pronos", [])
                 except json.JSONDecodeError as e:
                     print(f"[Analyser] Erreur JSON (brace matching) : {e}")
 
     print("[Analyser] Avertissement : aucun bloc JSON trouvé dans la réponse.")
-    # Debug : afficher les 500 derniers caractères pour comprendre le format
     print(f"[Analyser] Fin de la réponse (debug) :\n---\n{text[-500:]}\n---")
     return []
 
 
 def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
     """
-    Envoie les matchs à Gemini 2.0 Flash via l'API avec Google Search activé.
-    Supporte la rotation multi-clés Gemini (séparées par virgule dans le secret).
-    Retourne (texte_complet_analyse, liste_paris_recommandés).
+    Envoie les matchs à Gemini et retourne (texte_complet, liste_pronos).
+    Supporte la rotation multi-clés Gemini.
     """
     prompt = build_prompt(matches_text)
 
     import time
 
-    # Clés Gemini disponibles (rotation si quota épuisé)
     gemini_keys = list(config.GEMINI_API_KEYS) if config.GEMINI_API_KEYS else []
     if not gemini_keys:
         raise RuntimeError("[Analyser] Aucune clé GEMINI_API_KEY configurée.")
     print(f"[Analyser] {len(gemini_keys)} clé(s) Gemini disponible(s).")
 
-    # gemini-2.5-flash en PREMIER (2.0-flash déprécié pour nouveaux projets en 2026)
-    # Fallback : flash-latest puis 2.0-flash (au cas où, mais va échouer)
     models_to_try = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash"]
     response = None
 
@@ -323,33 +272,25 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
                 break
             print(f"[Analyser] Appel {model_name} (Google Search activé)...")
             max_retries = 2
-            success = False
             quota_exhausted = False
             for attempt in range(max_retries):
                 try:
-                    # Config de base commune
-                    # max_output_tokens=65536 pour éviter que le JSON final soit tronqué
-                    # (Gemini 2.5 Flash supporte jusqu'à 65536 tokens en sortie)
-                    # Google Search grounding réactivé (billing activé → quota large)
                     gen_config_kwargs = {
                         "tools": [types.Tool(google_search=types.GoogleSearch())],
                         "temperature": 0.3,
                         "max_output_tokens": 65536,
                     }
-
-                    # Désactive le mode "thinking" pour gemini-2.5-flash
                     if "2.5" in model_name or "flash-preview" in model_name:
                         try:
                             gen_config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
                         except Exception:
                             pass
 
-                    # Timeout de 5 min pour éviter les hangs infinis
                     try:
                         signal.signal(signal.SIGALRM, _timeout_handler)
                         signal.alarm(GEMINI_CALL_TIMEOUT)
                     except (AttributeError, OSError):
-                        pass  # Windows n'a pas SIGALRM — on skip
+                        pass
 
                     response = client.models.generate_content(
                         model=model_name,
@@ -358,12 +299,11 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
                     )
 
                     try:
-                        signal.alarm(0)  # Annule le timeout
+                        signal.alarm(0)
                     except (AttributeError, OSError):
                         pass
 
                     print(f"[Analyser] Modèle utilisé : {model_name} (clé #{key_index + 1})")
-                    success = True
                     break
                 except Exception as e:
                     try:
@@ -371,18 +311,15 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
                     except (AttributeError, OSError):
                         pass
                     err = str(e).lower()
-                    # Erreurs fatales (mauvaise clé, etc.) → on crash immédiatement
                     fatal = "invalid_api_key" in err or "permission_denied" in err
                     if fatal:
                         print(f"[Analyser] Erreur fatale ({model_name}) : {e}")
                         raise
-                    # Quota épuisé → on passe directement à la clé suivante
                     if "resource_exhausted" in err or "429" in err:
                         print(f"[Analyser] Quota épuisé ({model_name}, clé #{key_index + 1})")
                         print(f"[Analyser]   → Détail erreur : {e}")
                         quota_exhausted = True
                         break
-                    # Toutes les autres erreurs (réseau, 503, disconnect...) → retry puis modèle suivant
                     if attempt < max_retries - 1:
                         wait = 15
                         print(f"[Analyser] {model_name} erreur transitoire, retry dans {wait}s... ({attempt+1}/{max_retries})")
@@ -392,15 +329,13 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
                         print(f"[Analyser] {model_name} échec après {max_retries} essais, modèle suivant...")
                         print(f"[Analyser]   → {e}")
 
-            # Si quota épuisé sur cette clé → skip tous les modèles restants, passe à la clé suivante
             if quota_exhausted:
                 print(f"[Analyser] Clé #{key_index + 1} épuisée, rotation vers clé suivante...")
                 break
 
     if response is None:
-        raise RuntimeError("[Analyser] Tous les modèles Gemini sont indisponibles (toutes les clés épuisées).")
+        raise RuntimeError("[Analyser] Tous les modèles Gemini sont indisponibles.")
 
-    # Log du finish_reason pour debug (MAX_TOKENS, STOP, SAFETY, etc.)
     try:
         for i, candidate in enumerate(response.candidates or []):
             fr = getattr(candidate, "finish_reason", None)
@@ -413,17 +348,12 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
     except Exception as e:
         print(f"[Analyser] Debug finish_reason erreur : {e}")
 
-    # Gemini 2.5 Flash a un mode "thinking" — le texte peut être dans les parts
     full_text = ""
-
-    # Tentative 1 : accès direct response.text
     try:
         if response.text:
             full_text = response.text
     except Exception:
         pass
-
-    # Tentative 2 : parcours des candidates/parts (mode thinking)
     if not full_text:
         try:
             for candidate in (response.candidates or []):
@@ -431,7 +361,6 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
                     continue
                 for part in (candidate.content.parts or []):
                     if hasattr(part, "text") and part.text:
-                        # Ignorer les parts "thinking" (pensées internes du modèle)
                         if hasattr(part, "thought") and part.thought:
                             continue
                         full_text += part.text
@@ -439,6 +368,6 @@ def analyse_matches(matches_text: str) -> tuple[str, list[dict]]:
             print(f"[Analyser] Avertissement extraction texte : {e}")
 
     print(f"[Analyser] Réponse reçue ({len(full_text)} caractères).")
-    bets = extract_json_block(full_text)
-    print(f"[Analyser] {len(bets)} pari(s) extrait(s) du JSON.")
-    return full_text, bets
+    pronos = extract_json_block(full_text)
+    print(f"[Analyser] {len(pronos)} prono(s) extrait(s) du JSON.")
+    return full_text, pronos

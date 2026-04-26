@@ -1,6 +1,8 @@
 """
 telegram_bot.py — Bot Telegram avec commandes interactives.
-Écoute les messages entrants et répond aux commandes /stats, /bankroll, /bets.
+
+Mode pronostiqueur : pas de bankroll, pas de €.
+Commandes : /stats, /bets, /help.
 
 Appelé via GitHub Actions (polling court, pas de serveur permanent).
 """
@@ -8,9 +10,8 @@ Appelé via GitHub Actions (polling court, pas de serveur permanent).
 import requests
 import time
 import config
-from modules.simulation import load_bankroll
-from modules.stats_tracker import get_full_stats
 from modules.db import get_client
+from modules.winrate_tracker import get_winrate_stats
 
 
 BASE_URL = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}"
@@ -41,72 +42,66 @@ def reply(chat_id: int, text: str) -> None:
         print(f"[Bot] Erreur reply : {e}")
 
 
-def cmd_bankroll(chat_id: int) -> None:
-    b = load_bankroll()
-    pl = b["current"] - b["initial"]
-    roi = (pl / b["initial"] * 100) if b["initial"] else 0
-    reply(chat_id, (
-        f"💰 *BANKROLL*\n\n"
-        f"Actuelle : *{b['current']:.2f}€*\n"
-        f"Initiale : {b['initial']:.2f}€\n"
-        f"P&L : *{pl:+.2f}€*  (ROI {roi:+.1f}%)\n"
-        f"En attente : {b['pending']} pari(s)\n"
-        f"Total joués : {b['total_bets']}  ({b['wins']}W / {b['losses']}L)"
-    ))
-
-
 def cmd_stats(chat_id: int) -> None:
-    s = get_full_stats()
-    if s.get("total_resolved", 0) == 0:
-        reply(chat_id, "📊 Aucune stat disponible (aucun pari résolu encore).")
+    s7 = get_winrate_stats(days=7)
+    s30 = get_winrate_stats(days=30)
+    s_all = get_winrate_stats()
+
+    if s_all.get("total", 0) == 0 and s_all.get("pending", 0) == 0:
+        reply(chat_id, "📊 Aucun prono enregistré pour le moment.")
         return
 
     lines = [
-        "📊 *STATISTIQUES*\n",
-        f"Paris résolus : {s['total_resolved']}  ({s['wins']}W / {s['losses']}L)",
-        f"Win rate : *{s['winrate']}%*",
-        f"Yield global : *{s['yield_pct']:+.1f}%*",
-        f"P&L total : *{s['total_pl']:+.2f}€*",
-        f"Yield 30j : {s['recent_30d_yield']:+.1f}%  |  P&L 30j : {s['recent_30d_pl']:+.2f}€",
+        "📊 *STATISTIQUES PRONOSTIQUEUR*",
         "",
-        "🏆 *Top compétitions :*",
+        f"*7 derniers jours*  : {s7['wins']}W / {s7['losses']}L  →  *{s7['winrate_pct']:.0f}%*",
+        f"*30 derniers jours* : {s30['wins']}W / {s30['losses']}L  →  *{s30['winrate_pct']:.0f}%*",
+        f"*Toutes périodes*   : {s_all['wins']}W / {s_all['losses']}L  →  *{s_all['winrate_pct']:.0f}%*",
     ]
-    for comp, data in list(s.get("by_competition", {}).items())[:5]:
-        lines.append(f"  {comp} — {data['yield_pct']:+.1f}%  ({data['wins']}W/{data['losses']}L)")
-
-    lines += ["", "🎯 *Par marché :*"]
-    for market, data in s.get("by_market", {}).items():
-        lines.append(f"  {market} — {data['yield_pct']:+.1f}%  ({data['wins']}W/{data['losses']}L)")
+    if s_all.get("pushes"):
+        lines.append(f"_PUSH : {s_all['pushes']}_")
+    lines.append("")
+    lines.append(f"⏳ En attente : *{s_all['pending']}* prono(s)")
 
     reply(chat_id, "\n".join(lines))
 
 
 def cmd_bets(chat_id: int) -> None:
     db = get_client()
-    resp = db.table("bets").select("*").eq("status", "PENDING").order("date", desc=True).execute()
-    pending = resp.data or []
-
-    if not pending:
-        reply(chat_id, "⏳ Aucun pari en attente actuellement.")
+    try:
+        resp = (
+            db.table("bets")
+            .select("*")
+            .eq("status", "PENDING")
+            .order("date", desc=True)
+            .execute()
+        )
+        pending = resp.data or []
+    except Exception as e:
+        reply(chat_id, f"❌ Erreur Supabase : {e}")
         return
 
-    lines = [f"⏳ *PARIS EN ATTENTE ({len(pending)})*\n"]
+    if not pending:
+        reply(chat_id, "⏳ Aucun prono en attente actuellement.")
+        return
+
+    lines = [f"⏳ *PRONOS EN ATTENTE ({len(pending)})*", ""]
     for b in pending:
+        conf = int(b.get("confidence") or 0)
+        stars = "⭐" * conf if conf else ""
         lines.append(
-            f"• *{b['match']}*\n"
-            f"  Marché : `{b['market']}`  Cote : `{b['market_odds']}`\n"
-            f"  Mise : `{float(b['sim_stake'] or 0):.2f}€`  Edge : {b['edge']}\n"
-            f"  Date : {b['date']}\n"
+            f"• *{b.get('match', '')}*\n"
+            f"  Marché : `{b.get('market', '')}`  @  *{b.get('market_odds', '')}*  {stars}\n"
+            f"  Date : {b.get('date', '')}  ·  {b.get('competition', '—')}\n"
         )
     reply(chat_id, "\n".join(lines))
 
 
 def cmd_help(chat_id: int) -> None:
     reply(chat_id, (
-        "⚽ *Value Bet Agent — Commandes*\n\n"
-        "/bankroll — Solde et P&L actuel\n"
-        "/stats — Statistiques de performance\n"
-        "/bets — Paris en attente\n"
+        "🎯 *Pronostiqueur — Commandes*\n\n"
+        "/stats — Winrate (7j / 30j / global)\n"
+        "/bets — Pronos en attente de résolution\n"
         "/help — Cette aide"
     ))
 
@@ -124,14 +119,15 @@ def handle_update(update: dict) -> None:
         reply(chat_id, "Accès non autorisé.")
         return
 
-    if text.startswith("/bankroll"):
-        cmd_bankroll(chat_id)
-    elif text.startswith("/stats"):
+    if text.startswith("/stats"):
         cmd_stats(chat_id)
     elif text.startswith("/bets"):
         cmd_bets(chat_id)
     elif text.startswith("/help") or text.startswith("/start"):
         cmd_help(chat_id)
+    elif text.startswith("/bankroll"):
+        # Commande legacy — explique le pivot
+        reply(chat_id, "ℹ️ Le mode bankroll a été retiré. Utilise /stats pour voir le winrate.")
     else:
         reply(chat_id, "Commande inconnue. Tape /help pour voir les commandes disponibles.")
 

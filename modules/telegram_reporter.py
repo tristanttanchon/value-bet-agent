@@ -1,6 +1,9 @@
 """
 Telegram Reporter — envoie des messages via un bot Telegram.
 Utilise l'API Telegram directement (pas de lib supplémentaire).
+
+Mode pronostiqueur : plus de bankroll, plus de mises, plus de P&L.
+Juste des pronos + winrate historique.
 """
 
 import requests
@@ -20,7 +23,6 @@ def send_message(text: str) -> bool:
         print("[Telegram] Clés manquantes dans .env (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)")
         return False
 
-    # Découpe en morceaux si trop long
     chunks = [text[i:i+MAX_MSG_LENGTH] for i in range(0, len(text), MAX_MSG_LENGTH)]
     url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
     success = True
@@ -49,68 +51,56 @@ def send_message(text: str) -> bool:
     return success
 
 
-def send_full_report(full_analysis: str, bets: list[dict], bankroll: dict, matches_count: int = 0) -> None:
+def send_pronos_report(pronos: list[dict], winrate_stats: dict | None = None, matches_count: int = 0) -> None:
     """
-    Envoie un résumé clair de la journée sur Telegram (pas de pavé brut).
-    Un seul message concis : bankroll + paris recommandés (ou "aucun").
-    Le rapport détaillé reste sauvegardé dans data/reports/ pour consultation.
+    Envoie le message principal du jour : pronos + winrate historique.
+
+    pronos : liste de dicts avec au moins { match, market, market_odds, confidence,
+             competition, kickoff, telegraph_url (opt) }
+    winrate_stats : dict avec { total, wins, losses, pending, winrate_pct } (opt)
+    matches_count : nombre total de matchs analysés (opt)
     """
     from datetime import date
     today = date.today().isoformat()
-    pl = bankroll["current"] - bankroll["initial"]
-    roi = (pl / bankroll["initial"] * 100) if bankroll["initial"] else 0
 
     lines = [
-        f"⚽ *VALUE BET — {today}*",
-        f"━━━━━━━━━━━━━━━━━━━",
-        f"💰 Bankroll : *{bankroll['current']:.2f}€*  ({pl:+.2f}€ · ROI {roi:+.1f}%)",
+        f"🎯 *PRONOS DU JOUR — {today}*",
+        "━━━━━━━━━━━━━━━━━━━",
     ]
-    if matches_count:
-        lines.append(f"📊 {matches_count} match(s) analysé(s)")
-    lines.append("")  # ligne vide
 
-    if bets:
-        lines.append(f"🎯 *{len(bets)} pari(s) recommandé(s)*")
+    # Historique : winrate sur résolu (pas de bankroll, pas d'€)
+    if winrate_stats and winrate_stats.get("total", 0) > 0:
+        wr = winrate_stats.get("winrate_pct", 0)
+        w = winrate_stats.get("wins", 0)
+        l = winrate_stats.get("losses", 0)
+        lines.append(f"📊 Historique : *{w}W / {l}L*  |  Winrate : *{wr:.0f}%*")
+
+    if matches_count:
+        lines.append(f"🔍 {matches_count} match(s) analysé(s)")
+    lines.append("")
+
+    if pronos:
+        lines.append(f"✨ *{len(pronos)} prono(s) sélectionné(s)*")
         lines.append("")
-        for b in bets:
-            edge_pct = float(b.get("edge", 0)) * 100
-            conf = int(b.get("confidence", 0))
+        for p in pronos:
+            conf = int(p.get("confidence", 0))
             stars = "⭐" * conf if conf else "–"
-            match = b.get("match", "")
-            market = b.get("market", "")
-            odds = b.get("market_odds", "")
-            stake = float(b.get("sim_stake", 0))
+            match = p.get("match", "")
+            market = p.get("market", "")
+            odds = p.get("market_odds", "")
+            kickoff = p.get("kickoff", "")
+            competition = p.get("competition", "")
+
             lines.append(f"✅ *{match}*")
-            lines.append(f"   `{market}` @ *{odds}*  ·  edge *{edge_pct:.1f}%*  ·  {stars}")
-            lines.append(f"   Mise : {stake:.2f}€")
-            # Lien vers l'analyse détaillée sur Telegraph (si dispo)
-            tg_url = b.get("telegraph_url")
+            lines.append(f"   {competition}  ·  {kickoff}")
+            lines.append(f"   Prono : `{market}`  @  *{odds}*  ·  {stars}")
+
+            tg_url = p.get("telegraph_url")
             if tg_url:
                 lines.append(f"   📖 [Analyse détaillée]({tg_url})")
             lines.append("")
     else:
-        lines.append("❌ *Aucun pari recommandé*")
-        lines.append("_Marché efficient — on passe notre tour_ 🧘")
+        lines.append("😐 *Aucun prono fiable aujourd'hui*")
+        lines.append("_Journée où aucun match n'atteint le seuil de confiance 3/5._")
 
     send_message("\n".join(lines).rstrip())
-
-
-def send_daily_alert(bets: list[dict], bankroll: dict) -> None:
-    """Alerte rapide si des paris sont trouvés — utilisée en cours d'analyse."""
-    if not bets:
-        return
-
-    lines = [f"⚽ *VALUE BETS DU JOUR — {len(bets)} pari(s)*\n"]
-    for b in bets:
-        edge_pct = float(b.get("edge", 0)) * 100
-        stars = "⭐" * int(b.get("confidence", 0))
-        lines.append(
-            f"• *{b.get('match', '')}*\n"
-            f"  Marché : {b.get('market', '')}  |  Cote : {b.get('market_odds', '')}\n"
-            f"  Edge : {edge_pct:.1f}%  |  Confiance : {stars}\n"
-            f"  Mise simulée : {float(b.get('sim_stake', 0)):.2f}€\n"
-        )
-
-    pl = bankroll["current"] - bankroll["initial"]
-    lines.append(f"\n💰 *Bankroll : {bankroll['current']:.2f}€*  ({pl:+.2f}€ depuis le début)")
-    send_message("\n".join(lines))

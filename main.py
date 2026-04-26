@@ -1,62 +1,42 @@
 """
-main.py — Orchestrateur principal.
-Lance une analyse complète : fetch → enrich → analyse → décision → simulation → rapport.
+main.py — Pipeline quotidien du Pronostiqueur.
+
+Flow :
+  1. Fetcher : matchs du jour + cotes (Odds API, 23 compétitions)
+  2. Enricher : données fraîches (blessés, forme, H2H) via API-Football
+  3. Analyser : Gemini sélectionne 4-5 meilleurs pronos (1X2 / O/U / Double Chance)
+  4. Telegraph : 1 page par prono avec analyse détaillée
+  5. Telegram : message résumé avec winrate historique et liens Telegraph
+  6. Fun predictor : Gemini prédit score exact + buteurs + cartons sur top 5
+  7. Enregistrement Supabase (pronos sérieux uniquement) pour résolution
 
 Usage :
   python main.py             # Analyse immédiate
-  python main.py --resolve   # Mode résolution de paris (interactif)
   python main.py --dashboard # Ouvre le dashboard HTML
-  python main.py --stats     # Affiche les stats de performance
 """
 
 import sys
 import config
 from modules.fetcher import get_todays_matches, format_matches_for_prompt, get_last_status
 from modules.analyser import analyse_matches
-from modules.decision_engine import filter_and_size_bets
-from modules.simulation import load_bankroll, record_bets, resolve_bet
-from modules.reporter import generate_report, print_summary
 from modules.data_enricher import enrich_matches
-from modules.clv_tracker import record_opening_odds
-from modules.bankroll_guard import is_betting_suspended, get_kelly_fraction, check_and_alert, get_status_line
-from modules.stats_tracker import get_full_stats, format_stats_for_report
-from modules.correlation_filter import filter_correlated_bets
-from modules.telegram_reporter import send_daily_alert, send_full_report
+from modules.winrate_tracker import get_winrate_stats, record_pronos
+from modules.telegram_reporter import send_message, send_pronos_report
+from modules.fun_predictor import generate_fun_predictions
 
 
 def run_analysis() -> None:
-    """Lance l'analyse complète du jour."""
+    """Lance le pipeline complet du jour."""
 
-    print("\n⚽  VALUE BET AGENT — Démarrage de l'analyse...\n")
+    print("\n🎯  PRONOSTIQUEUR — Démarrage de l'analyse...\n")
 
-    # ── 0. Test Telegram + Vérification bankroll guard ──────────────────────
+    # ── 0. Ping Telegram de démarrage ───────────────────────────────────────
     if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID:
-        from modules.telegram_reporter import send_message
-        ok = send_message("⚽ Analyse Value Bet démarrée...")
+        ok = send_message("🎯 Pronostiqueur démarré — analyse en cours...")
         if not ok:
-            print("[Main] ⚠️  Telegram non joignable — vérifiez BOT_TOKEN et CHAT_ID")
+            print("[Main] ⚠️  Telegram non joignable — vérifie BOT_TOKEN et CHAT_ID")
     else:
         print("[Main] ⚠️  TELEGRAM_BOT_TOKEN ou TELEGRAM_CHAT_ID manquant dans les secrets")
-
-    bankroll = load_bankroll()
-    alert_msg = check_and_alert(bankroll)
-    if alert_msg and config.TELEGRAM_BOT_TOKEN:
-        from modules.telegram_reporter import send_message
-        send_message(alert_msg)
-
-    if is_betting_suspended(bankroll):
-        print("🚨 STOP LOSS DÉCLENCHÉ — Paris suspendus. Analyse annulée.")
-        print(f"   {get_status_line(bankroll)}")
-        return
-
-    print(f"   {get_status_line(bankroll)}\n")
-
-    # ── 0b. État de l'apprentissage ────────────────────────────────────────
-    try:
-        from modules.learning import print_learning_status
-        print_learning_status()
-    except Exception as e:
-        print(f"[Main] Apprentissage indisponible : {e}")
 
     # ── 1. Récupération des matchs ──────────────────────────────────────────
     print("[1/5] Récupération des matchs et cotes du jour...")
@@ -64,11 +44,10 @@ def run_analysis() -> None:
 
     if not matches:
         status = get_last_status()
-        print(f"  → Aucun match trouvé aujourd'hui (status={status}). Fin de l'analyse.")
+        print(f"  → Aucun match trouvé (status={status}). Fin de l'analyse.")
 
         # Alerte Telegram selon la raison
         if config.TELEGRAM_BOT_TOKEN:
-            from modules.telegram_reporter import send_message
             if status == "keys_exhausted":
                 send_message(
                     "🚨 *QUOTAS ODDS API ÉPUISÉS*\n\n"
@@ -81,12 +60,12 @@ def run_analysis() -> None:
             elif status == "no_keys_configured":
                 send_message(
                     "⚠️ *Configuration manquante*\n\n"
-                    "Aucune clé `ODDS_API_KEY` configurée dans les secrets GitHub.\n"
-                    "L'analyse ne peut pas démarrer."
+                    "Aucune clé `ODDS_API_KEY` configurée dans les secrets GitHub."
                 )
-            else:  # "no_matches_today" ou "ok" sans résultats
+            else:
+                from datetime import date
                 send_message(
-                    f"😴 *Journée creuse — {__import__('datetime').date.today().isoformat()}*\n\n"
+                    f"😴 *Journée creuse — {date.today().isoformat()}*\n\n"
                     "Aucun match trouvé aujourd'hui sur les 23 compétitions suivies.\n"
                     "On se retrouve demain 🎯"
                 )
@@ -104,123 +83,97 @@ def run_analysis() -> None:
     else:
         print("\n[2/5] API-Football non configurée — enrichissement ignoré.")
 
-    # ── 3. Analyse Gemini ───────────────────────────────────────────────────
-    print("\n[3/5] Analyse en cours (Gemini 2.0 Flash + Google Search)...")
+    # ── 3. Analyse Gemini (pronos sérieux) ─────────────────────────────────
+    print("\n[3/5] Analyse Gemini — sélection des 4-5 meilleurs pronos...")
     try:
-        full_analysis, raw_bets = analyse_matches(matches_text + enriched_data)
+        full_analysis, pronos = analyse_matches(matches_text + enriched_data)
     except Exception as e:
         print(f"  → Erreur Gemini : {e}")
         if config.TELEGRAM_BOT_TOKEN:
-            from modules.telegram_reporter import send_message
             send_message(f"❌ Analyse échouée : {str(e)[:200]}")
         return
 
     if not full_analysis:
-        print("  → Erreur : aucune réponse. Vérifiez votre clé GEMINI_API_KEY.")
+        print("  → Erreur : aucune réponse Gemini.")
         if config.TELEGRAM_BOT_TOKEN:
-            from modules.telegram_reporter import send_message
-            send_message("❌ Erreur analyse : Gemini n'a pas répondu. Vérifiez GEMINI_API_KEY.")
+            send_message("❌ Erreur analyse : Gemini n'a pas répondu. Vérifie GEMINI_API_KEY.")
         return
 
-    print(f"  → Analyse reçue. {len(raw_bets)} pari(s) brut(s) identifié(s).")
+    print(f"  → {len(pronos)} prono(s) sélectionné(s) par Gemini.")
 
-    # ── 4. Filtre, sizing Kelly + anti-corrélation ──────────────────────────
-    print("\n[4/5] Filtrage, Kelly et anti-corrélation...")
-    kelly_fraction = get_kelly_fraction(bankroll)
-    valid_bets = filter_and_size_bets(raw_bets, bankroll["current"], kelly_override=kelly_fraction)
-    print(f"  → {len(valid_bets)} pari(s) après filtre edge (≥5%)")
-
-    valid_bets = filter_correlated_bets(valid_bets, bankroll["current"])
-    print(f"  → {len(valid_bets)} pari(s) après filtre anti-corrélation")
-
-    # ── 5. Simulation, CLV, rapport ─────────────────────────────────────────
-    print("\n[5/5] Enregistrement simulation + CLV + rapport...")
-
-    if valid_bets:
-        bankroll = record_bets(valid_bets)
-        record_opening_odds(valid_bets)
-
-    stats = get_full_stats()
-    stats_text = format_stats_for_report(stats)
-    report_path = generate_report(full_analysis + "\n\n" + stats_text, valid_bets, bankroll)
-
-    # Publication Telegraph : une page détaillée par pari recommandé
-    if valid_bets and config.TELEGRAM_BOT_TOKEN:
+    # ── 4. Publication Telegraph par prono ──────────────────────────────────
+    print("\n[4/5] Publication des analyses détaillées sur Telegraph...")
+    if pronos and config.TELEGRAM_BOT_TOKEN:
         try:
             from modules.telegraph import publish_analysis
             published = 0
-            for bet in valid_bets:
-                analysis_text = (bet.get("analysis") or "").strip()
+            for p in pronos:
+                analysis_text = (p.get("analysis") or "").strip()
                 if not analysis_text:
                     continue
-                title = f"{bet.get('match', 'Match')} — {bet.get('market', '')}"
-                edge_pct = float(bet.get("edge", 0)) * 100
-                conf = int(bet.get("confidence", 0)) if bet.get("confidence") else 0
+                title = f"{p.get('match', 'Match')} — {p.get('market', '')}"
+                conf = int(p.get("confidence", 0)) if p.get("confidence") else 0
                 header = {
-                    "Compétition": bet.get("competition", "—"),
-                    "Coup d'envoi": bet.get("kickoff", "—"),
-                    "Marché": bet.get("market", "—"),
-                    "Cote marché": bet.get("market_odds", "—"),
-                    "Edge": f"{edge_pct:.1f}%",
+                    "Compétition": p.get("competition", "—"),
+                    "Coup d'envoi": p.get("kickoff", "—"),
+                    "Marché": p.get("market", "—"),
+                    "Cote marché": p.get("market_odds", "—"),
                     "Confiance": f"{conf}/5" if conf else "—",
-                    "Fiabilité données": bet.get("data_reliability", "—"),
-                    "Mise simulée": f"{float(bet.get('sim_stake', 0)):.2f}€",
                 }
                 url = publish_analysis(title, analysis_text, header)
                 if url:
-                    bet["telegraph_url"] = url
+                    p["telegraph_url"] = url
                     published += 1
-                    print(f"[Telegraph] ✓ {title} → {url}")
-            print(f"[Telegraph] {published}/{len(valid_bets)} analyse(s) publiée(s).")
+                    print(f"  ✓ {title} → {url}")
+            print(f"  → {published}/{len(pronos)} analyse(s) publiée(s).")
         except Exception as e:
-            print(f"[Main] Telegraph publishing failed : {e}")
+            print(f"  → Telegraph publishing failed : {e}")
 
-    # Envoi résumé clair sur Telegram (pas le pavé brut)
+    # ── 5. Enregistrement Supabase + envoi Telegram ─────────────────────────
+    print("\n[5/5] Enregistrement + envoi Telegram...")
+
+    if pronos:
+        record_pronos(pronos)
+
+    winrate = get_winrate_stats(days=30)  # winrate sur les 30 derniers jours
+    print(
+        f"  → Historique 30j : {winrate['wins']}W / {winrate['losses']}L "
+        f"(winrate {winrate['winrate_pct']:.0f}%)  |  {winrate['pending']} en attente"
+    )
+
     if config.TELEGRAM_BOT_TOKEN:
-        send_full_report(full_analysis, valid_bets, bankroll, matches_count=len(matches))
+        send_pronos_report(pronos, winrate_stats=winrate, matches_count=len(matches))
 
-    print_summary(valid_bets, bankroll)
-    print(f"\n  Rapport : {report_path}")
-    print(f"  Dashboard : python dashboard.py\n")
+    # ── 6. Bonus : pronos FUN (score exact, buteurs, cartons) ──────────────
+    print("\n[Bonus] Génération des pronos fun...")
+    try:
+        fun_message = generate_fun_predictions(matches_text)
+        if fun_message and config.TELEGRAM_BOT_TOKEN:
+            send_message(fun_message)
+            print("  → Message fun envoyé sur Telegram.")
+        elif not fun_message:
+            print("  → Génération fun échouée (non bloquant).")
+    except Exception as e:
+        print(f"  → Erreur pronos fun (non bloquant) : {e}")
 
-
-def run_resolve() -> None:
-    """Mode interactif pour résoudre des paris en attente."""
-    print("\n📋  MODE RÉSOLUTION DE PARIS\n")
-    match = input("  Nom du match (ou partie du nom) : ").strip()
-    market = input("  Marché (ex: 1, Over 2.5, BTTS) : ").strip()
-    result = input("  Résultat (w = gagné / l = perdu) : ").strip().lower()
-
-    if result not in ("w", "l"):
-        print("  Réponse invalide. Utilisez 'w' ou 'l'.")
-        return
-
-    msg = resolve_bet(match, market, won=(result == "w"))
-    print(f"\n  → {msg}\n")
-
-    bankroll = load_bankroll()
-    pl = bankroll["current"] - bankroll["initial"]
-    roi = (pl / bankroll["initial"]) * 100
-    print(f"  Bankroll : {bankroll['current']:.2f}€  ({pl:+.2f} / ROI {roi:+.1f}%)\n")
+    print("\n✅  Analyse terminée.\n")
 
 
 def run_stats() -> None:
-    """Affiche les statistiques de performance dans le terminal."""
-    from modules.stats_tracker import get_full_stats, format_stats_for_report
-    from modules.clv_tracker import get_clv_summary
-    stats = get_full_stats()
-    clv = get_clv_summary()
-    print(format_stats_for_report(stats))
-    if clv.get("total", 0) > 0:
-        print(f"  CLV moyen : {clv['avg_clv']:+.1f}%  |  "
-              f"Bat la closing line : {clv['beat_closing_line_pct']:.0f}%  |  "
-              f"Qualité modèle : {clv['model_quality']}")
+    """Affiche le winrate dans le terminal."""
+    stats_7j = get_winrate_stats(days=7)
+    stats_30j = get_winrate_stats(days=30)
+    stats_all = get_winrate_stats()
+
+    print("\n📊  STATISTIQUES PRONOSTIQUEUR\n")
+    print(f"  7 derniers jours  : {stats_7j['wins']}W / {stats_7j['losses']}L  |  Winrate : {stats_7j['winrate_pct']:.1f}%")
+    print(f"  30 derniers jours : {stats_30j['wins']}W / {stats_30j['losses']}L  |  Winrate : {stats_30j['winrate_pct']:.1f}%")
+    print(f"  Toutes périodes   : {stats_all['wins']}W / {stats_all['losses']}L  |  Winrate : {stats_all['winrate_pct']:.1f}%")
+    print(f"\n  Pronos en attente : {stats_all['pending']}")
 
 
 if __name__ == "__main__":
-    if "--resolve" in sys.argv:
-        run_resolve()
-    elif "--dashboard" in sys.argv:
+    if "--dashboard" in sys.argv:
         from dashboard import open_dashboard
         open_dashboard()
     elif "--stats" in sys.argv:

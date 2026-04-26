@@ -1,127 +1,197 @@
 """
-dashboard.py — Génère un dashboard HTML local.
-Ouvre automatiquement dans le navigateur.
+dashboard.py — Génère un dashboard HTML local (mode pronostiqueur).
+
+Pas de bankroll, pas de €. Juste un récap winrate + détail des pronos
+récents lus depuis Supabase.
 
 Usage :
   python dashboard.py
 """
 
-import csv
 import json
 import webbrowser
-from datetime import date
-from pathlib import Path
+from datetime import date, timedelta
 import config
-from modules.simulation import load_bankroll
-from modules.stats_tracker import get_full_stats
-from modules.clv_tracker import get_clv_summary
-from modules.bankroll_guard import get_drawdown, get_kelly_fraction, get_status_line
+from modules.db import get_client
+from modules.winrate_tracker import get_winrate_stats
 
 
 DASHBOARD_FILE = config.DATA_DIR / "dashboard.html"
 
 
-def load_bankroll_history() -> list[dict]:
-    """Reconstruit l'historique du bankroll depuis le CSV des paris."""
-    if not config.BETS_LOG_FILE.exists():
+def load_recent_bets(limit: int = 50) -> list[dict]:
+    """Charge les N derniers pronos depuis Supabase."""
+    db = get_client()
+    try:
+        resp = (
+            db.table("bets")
+            .select("*")
+            .order("date", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return resp.data or []
+    except Exception as e:
+        print(f"[Dashboard] Erreur lecture Supabase : {e}")
         return []
 
-    history = []
-    bankroll = load_bankroll()
-    current = bankroll["initial"]
 
-    with open(config.BETS_LOG_FILE, encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        rows = [r for r in reader if r["status"] in ("WIN", "LOSS") and r["profit_loss"]]
+def load_winrate_history(days: int = 30) -> list[dict]:
+    """Reconstruit un historique du winrate cumulé jour par jour."""
+    db = get_client()
+    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    try:
+        resp = (
+            db.table("bets")
+            .select("date,status")
+            .gte("date", cutoff)
+            .order("date")
+            .execute()
+        )
+        rows = resp.data or []
+    except Exception as e:
+        print(f"[Dashboard] Erreur historique : {e}")
+        return []
 
-    rows.sort(key=lambda r: r["date"])
+    # Cumulé par date
+    by_date: dict[str, dict] = {}
+    for r in rows:
+        d = r.get("date") or "?"
+        slot = by_date.setdefault(d, {"W": 0, "L": 0})
+        if r.get("status") == "WIN":
+            slot["W"] += 1
+        elif r.get("status") == "LOSS":
+            slot["L"] += 1
 
-    for row in rows:
-        current = round(current + float(row["profit_loss"]), 2)
-        history.append({"date": row["date"], "bankroll": current})
+    cum_w = cum_l = 0
+    out = []
+    for d in sorted(by_date.keys()):
+        cum_w += by_date[d]["W"]
+        cum_l += by_date[d]["L"]
+        decisive = cum_w + cum_l
+        wr = (cum_w / decisive * 100) if decisive else 0
+        out.append({"date": d, "winrate": round(wr, 1)})
+    return out
 
-    return history
+
+def stats_by_market(bets: list[dict]) -> dict[str, dict]:
+    by: dict[str, dict] = {}
+    for b in bets:
+        m = b.get("market") or "—"
+        slot = by.setdefault(m, {"total": 0, "W": 0, "L": 0, "P": 0, "Pend": 0})
+        slot["total"] += 1
+        st = b.get("status")
+        if st == "WIN":
+            slot["W"] += 1
+        elif st == "LOSS":
+            slot["L"] += 1
+        elif st == "PUSH":
+            slot["P"] += 1
+        elif st == "PENDING":
+            slot["Pend"] += 1
+    for slot in by.values():
+        decisive = slot["W"] + slot["L"]
+        slot["winrate"] = round((slot["W"] / decisive * 100) if decisive else 0, 1)
+    return by
+
+
+def stats_by_competition(bets: list[dict]) -> dict[str, dict]:
+    by: dict[str, dict] = {}
+    for b in bets:
+        c = b.get("competition") or "—"
+        slot = by.setdefault(c, {"total": 0, "W": 0, "L": 0, "P": 0, "Pend": 0})
+        slot["total"] += 1
+        st = b.get("status")
+        if st == "WIN":
+            slot["W"] += 1
+        elif st == "LOSS":
+            slot["L"] += 1
+        elif st == "PUSH":
+            slot["P"] += 1
+        elif st == "PENDING":
+            slot["Pend"] += 1
+    for slot in by.values():
+        decisive = slot["W"] + slot["L"]
+        slot["winrate"] = round((slot["W"] / decisive * 100) if decisive else 0, 1)
+    return by
 
 
 def generate_dashboard() -> str:
     """Génère le fichier HTML du dashboard et retourne son chemin."""
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    bankroll = load_bankroll()
-    stats = get_full_stats()
-    clv = get_clv_summary()
-    history = load_bankroll_history()
-    guard_status = get_status_line(bankroll)
-    dd = get_drawdown(bankroll)
-    pl = bankroll["current"] - bankroll["initial"]
-    roi = (pl / bankroll["initial"] * 100) if bankroll["initial"] else 0
+    stats_7 = get_winrate_stats(days=7)
+    stats_30 = get_winrate_stats(days=30)
+    stats_all = get_winrate_stats()
+    history = load_winrate_history(days=30)
+    recent = load_recent_bets(limit=50)
+    by_market = stats_by_market(recent)
+    by_comp = stats_by_competition(recent)
 
-    # Données pour le graphique
     chart_labels = json.dumps([h["date"] for h in history])
-    chart_data = json.dumps([h["bankroll"] for h in history])
-    initial_line = json.dumps([bankroll["initial"]] * len(history))
+    chart_data = json.dumps([h["winrate"] for h in history])
 
-    # Stats par compétition
-    comp_rows = ""
-    if stats.get("by_competition"):
-        for comp, s in list(stats["by_competition"].items())[:10]:
-            color = "#2ecc71" if s["yield_pct"] > 0 else "#e74c3c"
-            comp_rows += f"""
+    def market_rows_html() -> str:
+        if not by_market:
+            return '<tr><td colspan="5" style="color:#888;text-align:center">Aucune donnée</td></tr>'
+        out = ""
+        for m, s in sorted(by_market.items(), key=lambda kv: -kv[1]["total"]):
+            color = "#2ecc71" if s["winrate"] >= 60 else ("#f39c12" if s["winrate"] >= 50 else "#e74c3c")
+            out += f"""
             <tr>
-                <td>{comp}</td>
+                <td><code>{m}</code></td>
                 <td>{s['total']}</td>
-                <td>{s['wins']}W / {s['losses']}L</td>
-                <td>{s['winrate']}%</td>
-                <td style="color:{color};font-weight:bold">{s['yield_pct']:+.1f}%</td>
-                <td style="color:{color};font-weight:bold">{s['pl']:+.2f}€</td>
+                <td>{s['W']}W / {s['L']}L</td>
+                <td>{s['Pend']}</td>
+                <td style="color:{color};font-weight:bold">{s['winrate']:.0f}%</td>
             </tr>"""
+        return out
 
-    # Stats par marché
-    market_rows = ""
-    if stats.get("by_market"):
-        for market, s in stats["by_market"].items():
-            color = "#2ecc71" if s["yield_pct"] > 0 else "#e74c3c"
-            market_rows += f"""
+    def comp_rows_html() -> str:
+        if not by_comp:
+            return '<tr><td colspan="5" style="color:#888;text-align:center">Aucune donnée</td></tr>'
+        out = ""
+        for c, s in sorted(by_comp.items(), key=lambda kv: -kv[1]["total"])[:10]:
+            color = "#2ecc71" if s["winrate"] >= 60 else ("#f39c12" if s["winrate"] >= 50 else "#e74c3c")
+            out += f"""
             <tr>
-                <td>{market}</td>
+                <td>{c}</td>
                 <td>{s['total']}</td>
-                <td>{s['wins']}W / {s['losses']}L</td>
-                <td>{s['winrate']}%</td>
-                <td style="color:{color};font-weight:bold">{s['yield_pct']:+.1f}%</td>
-                <td style="color:{color};font-weight:bold">{s['pl']:+.2f}€</td>
+                <td>{s['W']}W / {s['L']}L</td>
+                <td>{s['Pend']}</td>
+                <td style="color:{color};font-weight:bold">{s['winrate']:.0f}%</td>
             </tr>"""
+        return out
 
-    # Derniers paris
-    recent_bets_rows = ""
-    all_bets = []
-    if config.BETS_LOG_FILE.exists():
-        with open(config.BETS_LOG_FILE, encoding="utf-8") as f:
-            all_bets = list(csv.DictReader(f))
-    for bet in reversed(all_bets[-20:]):
-        status_color = {"WIN": "#2ecc71", "LOSS": "#e74c3c", "PENDING": "#f39c12"}.get(bet["status"], "#aaa")
-        pl_str = f"{float(bet['profit_loss']):+.2f}€" if bet.get("profit_loss") else "—"
-        recent_bets_rows += f"""
-        <tr>
-            <td>{bet['date']}</td>
-            <td>{bet['match']}</td>
-            <td>{bet['market']}</td>
-            <td>{bet['market_odds']}</td>
-            <td>{bet['edge']}</td>
-            <td>{bet['sim_stake']}€</td>
-            <td style="color:{status_color};font-weight:bold">{bet['status']}</td>
-            <td style="color:{status_color}">{pl_str}</td>
-        </tr>"""
+    def recent_rows_html() -> str:
+        if not recent:
+            return '<tr><td colspan="6" style="color:#888;text-align:center">Aucun prono</td></tr>'
+        out = ""
+        for b in recent[:30]:
+            colors = {"WIN": "#2ecc71", "LOSS": "#e74c3c", "PUSH": "#888", "PENDING": "#f39c12"}
+            color = colors.get(b.get("status"), "#aaa")
+            conf = int(b.get("confidence") or 0)
+            stars = "⭐" * conf if conf else "—"
+            res = b.get("result") or "—"
+            out += f"""
+            <tr>
+                <td>{b.get('date', '')}</td>
+                <td>{b.get('match', '')}</td>
+                <td><code>{b.get('market', '')}</code></td>
+                <td>{b.get('market_odds', '')}</td>
+                <td>{stars}</td>
+                <td style="color:{color};font-weight:bold">{b.get('status', '')} <span style="color:#888;font-weight:normal">({res})</span></td>
+            </tr>"""
+        return out
 
-    pl_color = "#2ecc71" if pl >= 0 else "#e74c3c"
-    clv_quality = clv.get("model_quality", "N/A")
-    clv_avg = f"{clv.get('avg_clv', 0):+.1f}%" if clv.get("total", 0) > 0 else "N/A"
+    wr_color = "#2ecc71" if stats_30["winrate_pct"] >= 60 else ("#f39c12" if stats_30["winrate_pct"] >= 50 else "#e74c3c")
 
     html = f"""<!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Value Bet Agent — Dashboard</title>
+    <title>Pronostiqueur — Dashboard</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
@@ -130,15 +200,11 @@ def generate_dashboard() -> str:
         .header h1 {{ font-size: 1.8rem; color: #fff; }}
         .header p {{ color: #888; margin-top: 4px; font-size: 0.9rem; }}
         .container {{ max-width: 1400px; margin: 0 auto; padding: 24px 32px; }}
-        .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }}
+        .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px; }}
         .card {{ background: #1a1d2e; border-radius: 12px; padding: 20px; border: 1px solid #2a2d3e; }}
-        .card.wide {{ grid-column: span 2; }}
         .card h3 {{ font-size: 0.8rem; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }}
         .card .value {{ font-size: 2rem; font-weight: bold; }}
         .card .sub {{ font-size: 0.85rem; color: #888; margin-top: 4px; }}
-        .positive {{ color: #2ecc71; }}
-        .negative {{ color: #e74c3c; }}
-        .neutral {{ color: #f39c12; }}
         .chart-container {{ background: #1a1d2e; border-radius: 12px; padding: 24px; border: 1px solid #2a2d3e; margin-bottom: 24px; }}
         .chart-container h2 {{ margin-bottom: 16px; font-size: 1rem; color: #ccc; }}
         table {{ width: 100%; border-collapse: collapse; }}
@@ -147,120 +213,97 @@ def generate_dashboard() -> str:
         tr:hover td {{ background: #1f2235; }}
         .section {{ background: #1a1d2e; border-radius: 12px; padding: 24px; border: 1px solid #2a2d3e; margin-bottom: 24px; }}
         .section h2 {{ margin-bottom: 16px; font-size: 1rem; color: #ccc; }}
-        .guard-bar {{ background: #0f1117; border-radius: 8px; padding: 12px 16px; font-size: 0.85rem; color: #aaa; margin-bottom: 24px; border: 1px solid #2a2d3e; }}
         .two-col {{ display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }}
         @media (max-width: 900px) {{ .two-col {{ grid-template-columns: 1fr; }} }}
+        code {{ background: #0f1117; padding: 2px 6px; border-radius: 4px; font-size: 0.85rem; color: #74b9ff; }}
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>⚽ Value Bet Agent — Dashboard</h1>
+        <h1>🎯 Pronostiqueur — Dashboard</h1>
         <p>Mis à jour le {date.today().isoformat()}</p>
     </div>
 
     <div class="container">
 
-        <!-- Statut bankroll guard -->
-        <div class="guard-bar">{guard_status}</div>
-
-        <!-- KPIs -->
         <div class="grid">
             <div class="card">
-                <h3>Bankroll actuelle</h3>
-                <div class="value">{bankroll['current']:.2f}€</div>
-                <div class="sub">Initial : {bankroll['initial']:.2f}€</div>
+                <h3>Winrate 7 jours</h3>
+                <div class="value">{stats_7['winrate_pct']:.0f}%</div>
+                <div class="sub">{stats_7['wins']}W / {stats_7['losses']}L</div>
             </div>
             <div class="card">
-                <h3>P&L total</h3>
-                <div class="value {'positive' if pl >= 0 else 'negative'}">{pl:+.2f}€</div>
-                <div class="sub">ROI : {roi:+.1f}%</div>
+                <h3>Winrate 30 jours</h3>
+                <div class="value" style="color:{wr_color}">{stats_30['winrate_pct']:.0f}%</div>
+                <div class="sub">{stats_30['wins']}W / {stats_30['losses']}L</div>
             </div>
             <div class="card">
-                <h3>Yield global</h3>
-                <div class="value {'positive' if stats.get('yield_pct', 0) >= 0 else 'negative'}">{stats.get('yield_pct', 0):+.1f}%</div>
-                <div class="sub">30 derniers jours : {stats.get('recent_30d_yield', 0):+.1f}%</div>
+                <h3>Winrate global</h3>
+                <div class="value">{stats_all['winrate_pct']:.0f}%</div>
+                <div class="sub">{stats_all['wins']}W / {stats_all['losses']}L  |  {stats_all['pushes']} PUSH</div>
             </div>
             <div class="card">
-                <h3>Taux de réussite</h3>
-                <div class="value">{stats.get('winrate', 0):.1f}%</div>
-                <div class="sub">{stats.get('wins', 0)}W / {stats.get('losses', 0)}L</div>
-            </div>
-            <div class="card">
-                <h3>Drawdown</h3>
-                <div class="value {'negative' if dd > 0.1 else 'positive'}">{dd*100:.1f}%</div>
-                <div class="sub">Stop loss à 20%</div>
-            </div>
-            <div class="card">
-                <h3>CLV moyen</h3>
-                <div class="value {'positive' if clv.get('avg_clv', 0) > 0 else 'negative'}">{clv_avg}</div>
-                <div class="sub">Qualité modèle : {clv_quality}</div>
-            </div>
-            <div class="card">
-                <h3>Paris en attente</h3>
-                <div class="value neutral">{bankroll.get('pending', 0)}</div>
-                <div class="sub">Total joués : {bankroll.get('total_bets', 0)}</div>
+                <h3>Pronos en attente</h3>
+                <div class="value" style="color:#f39c12">{stats_all['pending']}</div>
+                <div class="sub">Total résolus : {stats_all['total']}</div>
             </div>
         </div>
 
-        <!-- Graphique bankroll -->
         <div class="chart-container">
-            <h2>📈 Évolution du bankroll</h2>
-            <canvas id="bankrollChart" height="80"></canvas>
+            <h2>📈 Évolution du winrate cumulé (30 derniers jours)</h2>
+            <canvas id="winrateChart" height="80"></canvas>
         </div>
 
-        <!-- Stats par compétition et par marché -->
         <div class="two-col">
-            <div class="section">
-                <h2>🏆 Performance par compétition</h2>
-                <table>
-                    <thead><tr><th>Compétition</th><th>Paris</th><th>W/L</th><th>WR</th><th>Yield</th><th>P&L</th></tr></thead>
-                    <tbody>{comp_rows if comp_rows else '<tr><td colspan="6" style="color:#888;text-align:center">Aucune donnée</td></tr>'}</tbody>
-                </table>
-            </div>
             <div class="section">
                 <h2>🎯 Performance par marché</h2>
                 <table>
-                    <thead><tr><th>Marché</th><th>Paris</th><th>W/L</th><th>WR</th><th>Yield</th><th>P&L</th></tr></thead>
-                    <tbody>{market_rows if market_rows else '<tr><td colspan="6" style="color:#888;text-align:center">Aucune donnée</td></tr>'}</tbody>
+                    <thead><tr><th>Marché</th><th>Total</th><th>W/L</th><th>⏳</th><th>Winrate</th></tr></thead>
+                    <tbody>{market_rows_html()}</tbody>
+                </table>
+            </div>
+            <div class="section">
+                <h2>🏆 Performance par compétition</h2>
+                <table>
+                    <thead><tr><th>Compétition</th><th>Total</th><th>W/L</th><th>⏳</th><th>Winrate</th></tr></thead>
+                    <tbody>{comp_rows_html()}</tbody>
                 </table>
             </div>
         </div>
 
-        <!-- Derniers paris -->
         <div class="section">
-            <h2>📋 20 derniers paris</h2>
+            <h2>📋 30 derniers pronos</h2>
             <table>
-                <thead><tr><th>Date</th><th>Match</th><th>Marché</th><th>Cote</th><th>Edge</th><th>Mise</th><th>Statut</th><th>P&L</th></tr></thead>
-                <tbody>{recent_bets_rows if recent_bets_rows else '<tr><td colspan="8" style="color:#888;text-align:center">Aucun pari enregistré</td></tr>'}</tbody>
+                <thead><tr><th>Date</th><th>Match</th><th>Marché</th><th>Cote</th><th>Confiance</th><th>Statut</th></tr></thead>
+                <tbody>{recent_rows_html()}</tbody>
             </table>
         </div>
 
     </div>
 
     <script>
-        const ctx = document.getElementById('bankrollChart').getContext('2d');
+        const ctx = document.getElementById('winrateChart').getContext('2d');
         const labels = {chart_labels};
         const data = {chart_data};
-        const initialLine = {initial_line};
 
         new Chart(ctx, {{
             type: 'line',
             data: {{
-                labels: labels.length ? labels : ['Début'],
+                labels: labels.length ? labels : ['—'],
                 datasets: [
                     {{
-                        label: 'Bankroll',
-                        data: data.length ? data : [{bankroll['current']}],
-                        borderColor: '#3498db',
-                        backgroundColor: 'rgba(52,152,219,0.1)',
+                        label: 'Winrate cumulé (%)',
+                        data: data.length ? data : [0],
+                        borderColor: '#2ecc71',
+                        backgroundColor: 'rgba(46,204,113,0.1)',
                         borderWidth: 2,
                         fill: true,
                         tension: 0.4,
                         pointRadius: 3,
                     }},
                     {{
-                        label: 'Bankroll initiale',
-                        data: initialLine.length ? initialLine : [{bankroll['initial']}],
+                        label: 'Seuil 60%',
+                        data: labels.map(_ => 60),
                         borderColor: '#888',
                         borderDash: [5, 5],
                         borderWidth: 1,
@@ -277,7 +320,7 @@ def generate_dashboard() -> str:
                 }},
                 scales: {{
                     x: {{ ticks: {{ color: '#888' }}, grid: {{ color: '#2a2d3e' }} }},
-                    y: {{ ticks: {{ color: '#888' }}, grid: {{ color: '#2a2d3e' }} }}
+                    y: {{ min: 0, max: 100, ticks: {{ color: '#888', callback: v => v + '%' }}, grid: {{ color: '#2a2d3e' }} }}
                 }}
             }}
         }});
