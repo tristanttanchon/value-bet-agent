@@ -31,6 +31,12 @@ MAX_ENRICHED_MATCHES = 15
 # Cache disque pour les top buteurs (refresh toutes les 24h)
 TOPSCORERS_CACHE_FILE = config.DATA_DIR / "topscorers_cache.json"
 
+# Cache disque pour les effectifs (refresh toutes les 24h)
+SQUADS_CACHE_FILE = config.DATA_DIR / "squads_cache.json"
+
+# Cache disque pour les fixtures (refresh par date)
+FIXTURES_CACHE_FILE = config.DATA_DIR / "fixtures_cache.json"
+
 # Ligues prioritaires pour l'enrichissement (les plus fiables en données)
 PRIORITY_LEAGUES = [
     "soccer_epl", "soccer_spain_la_liga", "soccer_italy_serie_a",
@@ -242,6 +248,198 @@ def get_top_scorers_for_competitions(competition_names: list[str]) -> dict[str, 
         print(f"[Enricher] Top buteurs : {len(result)} ligue(s) servies depuis le cache.")
 
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Effectifs des équipes (utilisé par fun_predictor pour avoir des noms réels)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _load_squads_cache() -> dict:
+    if not SQUADS_CACHE_FILE.exists():
+        return {}
+    try:
+        with open(SQUADS_CACHE_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_squads_cache(cache: dict) -> None:
+    try:
+        SQUADS_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(SQUADS_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[Enricher] Sauvegarde cache squads KO : {e}")
+
+
+def _fetch_squad(team_id: int) -> list[dict]:
+    """Effectif actuel d'une équipe via API-Football."""
+    data = _get("players/squads", {"team": team_id})
+    if not data or not data.get("response"):
+        return []
+    players = data["response"][0].get("players", [])
+    return [
+        {
+            "name": p.get("name", ""),
+            "position": p.get("position", "") or "",
+            "number": p.get("number"),
+        }
+        for p in players if p.get("name")
+    ]
+
+
+def get_squad_for_team(team_name: str) -> list[dict]:
+    """
+    Retourne l'effectif d'une équipe (cache disque 24h, clé = nom équipe + date).
+    """
+    if not config.API_FOOTBALL_KEY:
+        return []
+
+    today = date.today().isoformat()
+    cache = _load_squads_cache()
+    today_bucket = cache.get(today, {})
+
+    if team_name in today_bucket:
+        return today_bucket[team_name]
+
+    # Cache miss
+    team_id = get_team_id(team_name)
+    if not team_id:
+        today_bucket[team_name] = []
+        cache = {today: today_bucket}
+        _save_squads_cache(cache)
+        return []
+
+    squad = _fetch_squad(team_id)
+    today_bucket[team_name] = squad
+    cache = {today: today_bucket}  # purge des autres dates
+    _save_squads_cache(cache)
+    return squad
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Recherche fixture_id et events (utilisé par fun_resolver)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _load_fixtures_cache() -> dict:
+    if not FIXTURES_CACHE_FILE.exists():
+        return {}
+    try:
+        with open(FIXTURES_CACHE_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_fixtures_cache(cache: dict) -> None:
+    try:
+        FIXTURES_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(FIXTURES_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[Enricher] Sauvegarde cache fixtures KO : {e}")
+
+
+def _normalize_team(s: str) -> str:
+    return (s or "").lower().strip()
+
+
+def get_fixture_id(home_team: str, away_team: str, sport_key: str, match_date: str) -> int | None:
+    """
+    Trouve l'ID API-Football d'un match précis pour une date donnée.
+    Utilise un cache disque par (date, league_id) pour réduire les appels.
+    """
+    if not config.API_FOOTBALL_KEY:
+        return None
+
+    league_id = LEAGUE_IDS.get(sport_key)
+    if not league_id:
+        return None
+
+    season = _european_season()
+    cache_key = f"{match_date}_{league_id}_{season}"
+
+    cache = _load_fixtures_cache()
+    fixtures = cache.get(cache_key)
+
+    if fixtures is None:
+        data = _get("fixtures", {"date": match_date, "league": league_id, "season": season})
+        if not data or not data.get("response"):
+            cache[cache_key] = []
+            _save_fixtures_cache(cache)
+            return None
+        fixtures = []
+        for f in data["response"]:
+            fixtures.append({
+                "id": f["fixture"]["id"],
+                "home": f["teams"]["home"]["name"],
+                "away": f["teams"]["away"]["name"],
+            })
+        cache[cache_key] = fixtures
+        _save_fixtures_cache(cache)
+
+    # Match approximatif sur les noms d'équipes
+    bh = _normalize_team(home_team)
+    ba = _normalize_team(away_team)
+    for f in fixtures:
+        fh = _normalize_team(f["home"])
+        fa = _normalize_team(f["away"])
+        if (bh in fh or fh in bh) and (ba in fa or fa in ba):
+            return f["id"]
+    return None
+
+
+def get_fixture_events(fixture_id: int) -> dict:
+    """
+    Retourne les events d'un match :
+      {
+        "score": "2-1" | None,
+        "scorers": [{"name", "team", "minute"}],
+        "first_scorer_team": "home" | "away" | None,
+      }
+    """
+    data = _get("fixtures", {"id": fixture_id})
+    score = None
+    home_team = away_team = ""
+    if data and data.get("response"):
+        f = data["response"][0]
+        goals = f.get("goals") or {}
+        h = goals.get("home")
+        a = goals.get("away")
+        if h is not None and a is not None:
+            score = f"{h}-{a}"
+        home_team = f["teams"]["home"]["name"]
+        away_team = f["teams"]["away"]["name"]
+
+    events_data = _get("fixtures/events", {"fixture": fixture_id})
+    scorers: list[dict] = []
+    first_scorer_team: str | None = None
+
+    if events_data and events_data.get("response"):
+        for ev in events_data["response"]:
+            if ev.get("type") == "Goal" and ev.get("detail") not in ("Missed Penalty",):
+                player = (ev.get("player") or {}).get("name") or ""
+                team_name = (ev.get("team") or {}).get("name") or ""
+                minute = (ev.get("time") or {}).get("elapsed")
+                if not player:
+                    continue
+                scorers.append({"name": player, "team": team_name, "minute": minute})
+
+        if scorers:
+            first_team = scorers[0]["team"]
+            if home_team and _normalize_team(first_team) == _normalize_team(home_team):
+                first_scorer_team = "home"
+            elif away_team and _normalize_team(first_team) == _normalize_team(away_team):
+                first_scorer_team = "away"
+
+    return {
+        "score": score,
+        "scorers": scorers,
+        "first_scorer_team": first_scorer_team,
+        "home_team": home_team,
+        "away_team": away_team,
+    }
 
 
 def get_team_id(team_name: str) -> int | None:

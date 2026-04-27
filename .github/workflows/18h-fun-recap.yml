@@ -1,0 +1,25 @@
+name: 18h - Récap pronos fun (résolution veille)
+on:
+  schedule:
+    - cron: '0 16 * * *'   # 18:00 CEST (UTC+2)
+  workflow_dispatch:
+
+jobs:
+  fun-recap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Resolve fun predictions
+        env:
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python -c "from fun_resolver import run_fun_resolver; run_fun_resolver()"

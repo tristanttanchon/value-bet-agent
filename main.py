@@ -144,15 +144,23 @@ def run_analysis() -> None:
     if config.TELEGRAM_BOT_TOKEN:
         send_pronos_report(pronos, winrate_stats=winrate, matches_count=len(matches))
 
-    # ── 6. Bonus : pronos FUN (score exact, buteurs, cartons) ──────────────
+    # ── 6. Bonus : pronos FUN (score exact, buteurs, 1er buteur) ───────────
     print("\n[Bonus] Génération des pronos fun...")
     try:
-        fun_message = generate_fun_predictions(matches_text, matches=matches)
+        fun_message, fun_predictions = generate_fun_predictions(matches)
         if fun_message and config.TELEGRAM_BOT_TOKEN:
             send_message(fun_message)
             print("  → Message fun envoyé sur Telegram.")
         elif not fun_message:
             print("  → Génération fun échouée (non bloquant).")
+
+        # Persistance Supabase pour résolution le lendemain
+        if fun_predictions:
+            try:
+                from modules.fun_tracker import save_fun_predictions
+                save_fun_predictions(fun_predictions)
+            except Exception as e:
+                print(f"  → Sauvegarde fun KO (non bloquant) : {e}")
     except Exception as e:
         print(f"  → Erreur pronos fun (non bloquant) : {e}")
 
