@@ -106,12 +106,20 @@ LEAGUE_IDS = {
 }
 
 
+_no_key_warning_emitted = False
+
+
 def _get(endpoint: str, params: dict) -> dict | None:
     """Appel API-Football avec rotation multi-clés et compteur de quota."""
-    global _request_count, _total_requests_made
+    global _request_count, _total_requests_made, _no_key_warning_emitted
 
     current_key = _get_current_key()
     if not current_key:
+        # Diagnostic explicite la première fois qu'on bute sur l'épuisement
+        if not _no_key_warning_emitted:
+            print(f"[API-Football] ⛔ Toutes les clés sont épuisées — "
+                  f"impossible d'appeler /{endpoint} (et appels suivants).")
+            _no_key_warning_emitted = True
         return None
 
     # Rotation si quota atteint sur la clé courante
@@ -292,6 +300,7 @@ def _fetch_squad(team_id: int) -> list[dict]:
 def get_squad_for_team(team_name: str) -> list[dict]:
     """
     Retourne l'effectif d'une équipe (cache disque 24h, clé = nom équipe + date).
+    On NE cache PAS les échecs (résultat vide) pour permettre le retry au run suivant.
     """
     if not config.API_FOOTBALL_KEY:
         return []
@@ -300,21 +309,20 @@ def get_squad_for_team(team_name: str) -> list[dict]:
     cache = _load_squads_cache()
     today_bucket = cache.get(today, {})
 
-    if team_name in today_bucket:
+    if team_name in today_bucket and today_bucket[team_name]:
         return today_bucket[team_name]
 
-    # Cache miss
+    # Cache miss (ou cache vide → on retente)
     team_id = get_team_id(team_name)
     if not team_id:
-        today_bucket[team_name] = []
-        cache = {today: today_bucket}
-        _save_squads_cache(cache)
+        # On ne cache PAS l'échec
         return []
 
     squad = _fetch_squad(team_id)
-    today_bucket[team_name] = squad
-    cache = {today: today_bucket}  # purge des autres dates
-    _save_squads_cache(cache)
+    if squad:
+        today_bucket[team_name] = squad
+        cache = {today: today_bucket}  # purge des autres dates
+        _save_squads_cache(cache)
     return squad
 
 
