@@ -39,9 +39,10 @@ FIXTURES_CACHE_FILE = config.DATA_DIR / "fixtures_cache.json"
 
 # Ligues prioritaires pour l'enrichissement (les plus fiables en données)
 PRIORITY_LEAGUES = [
+    "soccer_fifa_world_cup",
+    "soccer_uefa_champs_league", "soccer_uefa_europa_league",
     "soccer_epl", "soccer_spain_la_liga", "soccer_italy_serie_a",
     "soccer_germany_bundesliga", "soccer_france_ligue_one",
-    "soccer_uefa_champs_league", "soccer_uefa_europa_league",
     "soccer_netherlands_eredivisie", "soccer_england_championship",
     "soccer_portugal_primeira_liga", "soccer_belgium_first_div",
 ]
@@ -72,14 +73,44 @@ def _european_season() -> int:
     """
     Retourne l'année de DÉBUT de la saison européenne (août → mai).
     Ex : avril 2026 → saison 2025-2026 → renvoie 2025.
-    Pour Brésil/Argentine (calendrier civil) c'est moins précis mais
-    API-Football reste tolérant et retourne quelque chose d'utile.
     """
     today = date.today()
     return today.year if today.month >= 7 else today.year - 1
 
+
+# Ligues hors-saison-européenne : on force la saison API-Football
+# (one-off tournaments + calendrier civil pour Amériques)
+_CALENDAR_YEAR_LEAGUES = {
+    "soccer_brazil_campeonato",
+    "soccer_argentina_primera_division",
+    "soccer_mexico_ligamx",
+    "soccer_conmebol_copa_libertadores",
+    "soccer_conmebol_copa_sudamericana",
+}
+
+# Tournois ponctuels : saison = année de l'édition
+_TOURNAMENT_SEASONS = {
+    "soccer_fifa_world_cup": 2026,  # Mondial USA/Canada/Mexique — édition 2026
+}
+
+
+def _season_for(sport_key: str | None = None) -> int:
+    """
+    Saison API-Football à utiliser pour un sport_key donné :
+      - Tournoi ponctuel (Mondial) → année de l'édition
+      - Ligue calendrier civil (Brésil, Argentine, Mexique) → année courante
+      - Sinon (ligues européennes) → année de début de saison (août→mai)
+    """
+    if sport_key and sport_key in _TOURNAMENT_SEASONS:
+        return _TOURNAMENT_SEASONS[sport_key]
+    today = date.today()
+    if sport_key and sport_key in _CALENDAR_YEAR_LEAGUES:
+        return today.year
+    return _european_season()
+
 # Correspondance compétition → league_id API-Football
 LEAGUE_IDS = {
+    "soccer_fifa_world_cup": 1,
     "soccer_epl": 39,
     "soccer_spain_la_liga": 140,
     "soccer_italy_serie_a": 135,
@@ -215,7 +246,6 @@ def get_top_scorers_for_competitions(competition_names: list[str]) -> dict[str, 
         return {}
 
     today = date.today().isoformat()
-    season = _european_season()
     cache = _load_topscorers_cache()
     today_bucket = cache.get(today, {})
 
@@ -233,7 +263,9 @@ def get_top_scorers_for_competitions(competition_names: list[str]) -> dict[str, 
         if not league_id:
             continue
 
-        cache_key = str(league_id)
+        # Saison spécifique au sport (Mondial = 2026, Brésil = année civile, etc.)
+        season = _season_for(sport_key)
+        cache_key = f"{league_id}_{season}"
         cached = today_bucket.get(cache_key)
         if cached is not None:
             result[comp_name] = cached
@@ -365,7 +397,7 @@ def get_fixture_id(home_team: str, away_team: str, sport_key: str, match_date: s
     if not league_id:
         return None
 
-    season = _european_season()
+    season = _season_for(sport_key)
     cache_key = f"{match_date}_{league_id}_{season}"
 
     cache = _load_fixtures_cache()
@@ -463,9 +495,10 @@ def get_team_id(team_name: str) -> int | None:
     return None
 
 
-def get_injuries(team_id: int, fixture_id: int | None = None) -> list[dict]:
+def get_injuries(team_id: int, fixture_id: int | None = None,
+                 sport_key: str | None = None) -> list[dict]:
     """Récupère les blessés et suspendus d'une équipe."""
-    params = {"team": team_id, "season": date.today().year}
+    params = {"team": team_id, "season": _season_for(sport_key)}
     if fixture_id:
         params["fixture"] = fixture_id
 
@@ -536,12 +569,12 @@ def get_h2h(team1_id: int, team2_id: int, last: int = 5) -> list[dict]:
     return matches
 
 
-def get_team_stats(team_id: int, league_id: int) -> dict:
+def get_team_stats(team_id: int, league_id: int, sport_key: str | None = None) -> dict:
     """Récupère les stats de la saison (xG, buts marqués/encaissés, forme)."""
     data = _get("teams/statistics", {
         "team": team_id,
         "league": league_id,
-        "season": date.today().year,
+        "season": _season_for(sport_key),
     })
     if not data or not data.get("response"):
         return {}
@@ -630,16 +663,21 @@ def enrich_matches(matches: list[dict]) -> str:
             lines.append("  [Données non disponibles pour ce match]\n")
             continue
 
-        # Trouve le league_id correspondant
+        # Trouve le league_id ET le sport_key correspondants
         league_id = None
-        for sport_key, comp_name in config.COMPETITION_NAMES.items():
+        match_sport_key: str | None = None
+        for sk, comp_name in config.COMPETITION_NAMES.items():
             if comp_name == competition:
-                league_id = LEAGUE_IDS.get(sport_key)
+                match_sport_key = sk
+                league_id = LEAGUE_IDS.get(sk)
                 break
+        # Fallback : on prend le sport_key porté par le match (si fourni)
+        if not match_sport_key:
+            match_sport_key = match.get("sport_key")
 
         # ── Blessés / Suspendus ──────────────────────────────────────────
-        home_injuries = get_injuries(home_id)
-        away_injuries = get_injuries(away_id)
+        home_injuries = get_injuries(home_id, sport_key=match_sport_key)
+        away_injuries = get_injuries(away_id, sport_key=match_sport_key)
 
         if home_injuries:
             lines.append(f"  🔴 Absences {home_name} :")
@@ -678,8 +716,8 @@ def enrich_matches(matches: list[dict]) -> str:
 
         # ── Stats saison ─────────────────────────────────────────────────
         if league_id:
-            home_stats = get_team_stats(home_id, league_id)
-            away_stats = get_team_stats(away_id, league_id)
+            home_stats = get_team_stats(home_id, league_id, sport_key=match_sport_key)
+            away_stats = get_team_stats(away_id, league_id, sport_key=match_sport_key)
 
             if home_stats:
                 lines.append(f"  📈 Stats saison {home_name} :")
