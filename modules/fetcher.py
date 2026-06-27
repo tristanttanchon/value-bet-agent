@@ -4,13 +4,28 @@ Fetcher — récupère les matchs du jour et les meilleures cotes via The Odds A
 
 import requests
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 import config
+
+
+# Affichage des heures de coup d'envoi en heure locale française
+PARIS_TZ = ZoneInfo("Europe/Paris")
 
 
 # Statut du dernier appel — consulté par main.py pour envoyer les bonnes alertes
 # Valeurs possibles : "ok" | "keys_exhausted" | "no_keys_configured" | "no_matches_today"
 _last_status: str = "ok"
+
+# Fenêtre de récupération des matchs : on prend tout ce qui démarre dans
+# les N prochaines heures (au lieu de "aujourd'hui UTC").
+#
+# Pourquoi 18h ? Couvre :
+#  - Run 11h CEST (09h UTC) → matchs jusqu'à 03h UTC le lendemain
+#  - Donc les late games US (Coupe du Monde 2026 : 03h CEST = 01h UTC J+1) ✅
+#  - Sans déborder sur les matchs européens du lendemain (qui seront pris par
+#    le run du lendemain matin).
+MATCH_LOOKAHEAD_HOURS = 18
 
 
 def get_last_status() -> str:
@@ -29,7 +44,9 @@ def get_todays_matches() -> list[dict]:
     global _last_status
     _last_status = "ok"  # reset à chaque appel
 
-    today = datetime.now(timezone.utc).date().isoformat()
+    now_utc = datetime.now(timezone.utc)
+    window_end_utc = now_utc + timedelta(hours=MATCH_LOOKAHEAD_HOURS)
+    today = now_utc.date().isoformat()  # gardé pour le champ `date` des bets
     matches = []
 
     # Pool de clés API avec rotation
@@ -114,7 +131,18 @@ def get_todays_matches() -> list[dict]:
             for game in resp.json():
                 games_total += 1
                 commence = game.get("commence_time", "")
-                if not commence.startswith(today):
+                if not commence:
+                    continue
+
+                # Parse ISO 8601 (avec Z ou +00:00) en UTC-aware
+                try:
+                    commence_dt = datetime.fromisoformat(commence.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+
+                # Filtre : matchs à venir dans la fenêtre [now, now + 18h]
+                # → on ignore les matchs déjà commencés ET ceux trop éloignés
+                if commence_dt <= now_utc or commence_dt > window_end_utc:
                     continue
 
                 home = game["home_team"]
@@ -163,12 +191,22 @@ def get_todays_matches() -> list[dict]:
                                 if best_odds[slot] is None or price > best_odds[slot]:
                                     best_odds[slot] = price
 
+                # kickoff affiché en heure de Paris (CEST/CET selon la saison)
+                kickoff_local = commence_dt.astimezone(PARIS_TZ).strftime("%H:%M")
+                # Si le match a lieu DEMAIN en heure locale, on le signale visuellement
+                local_date = commence_dt.astimezone(PARIS_TZ).date()
+                today_local = now_utc.astimezone(PARIS_TZ).date()
+                if local_date > today_local:
+                    kickoff_local += "  (demain)"
+
                 matches.append({
                     "match": f"{home} vs {away}",
                     "home": home,
                     "away": away,
+                    "sport_key": sport_key,
                     "competition": competition,
-                    "kickoff": commence[11:16],
+                    "kickoff": kickoff_local,
+                    "commence_utc": commence,  # ISO complet, pour tri chronologique fiable
                     "date": today,
                     "odds": best_odds,
                 })
@@ -184,8 +222,8 @@ def get_todays_matches() -> list[dict]:
         except Exception as e:
             print(f"[Fetcher] Erreur inattendue pour {sport_key} : {e}")
 
-    # Tri par heure de coup d'envoi
-    matches.sort(key=lambda m: m["kickoff"])
+    # Tri chronologique fiable (UTC ISO 8601) — gère les matchs à cheval sur minuit
+    matches.sort(key=lambda m: m.get("commence_utc", ""))
 
     # Diagnostic : combien de matchs ont les cotes premium (Over/Under + BTTS)
     premium_names = {config.COMPETITION_NAMES.get(k, k) for k in premium_set}
