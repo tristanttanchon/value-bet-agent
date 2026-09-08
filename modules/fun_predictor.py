@@ -26,7 +26,6 @@ GEMINI_CALL_TIMEOUT = 180
 
 # Hiérarchie de "médiatisme" — plus le score est bas, plus le match est prioritaire
 MEDIA_PRIORITY = {
-    "soccer_fifa_world_cup": -1,   # Coupe du Monde = toujours prioritaire absolu
     "soccer_uefa_champs_league": 0,
     "soccer_uefa_europa_league": 1,
     "soccer_uefa_conference_league": 2,
@@ -35,6 +34,12 @@ MEDIA_PRIORITY = {
     "soccer_italy_serie_a": 5,
     "soccer_germany_bundesliga": 6,
     "soccer_france_ligue_one": 7,
+    # coupes nationales (gros médiatisme sur les tours finaux)
+    "soccer_england_fa_cup": 8,
+    "soccer_spain_copa_del_rey": 8,
+    "soccer_italy_coppa_italia": 8,
+    "soccer_germany_dfb_pokal": 8,
+    "soccer_france_coupe_de_france": 8,
     # secondaire
     "soccer_netherlands_eredivisie": 12,
     "soccer_portugal_primeira_liga": 13,

@@ -39,8 +39,8 @@ FIXTURES_CACHE_FILE = config.DATA_DIR / "fixtures_cache.json"
 
 # Ligues prioritaires pour l'enrichissement (les plus fiables en données)
 PRIORITY_LEAGUES = [
-    "soccer_fifa_world_cup",
     "soccer_uefa_champs_league", "soccer_uefa_europa_league",
+    "soccer_uefa_conference_league",
     "soccer_epl", "soccer_spain_la_liga", "soccer_italy_serie_a",
     "soccer_germany_bundesliga", "soccer_france_ligue_one",
     "soccer_netherlands_eredivisie", "soccer_england_championship",
@@ -78,39 +78,17 @@ def _european_season() -> int:
     return today.year if today.month >= 7 else today.year - 1
 
 
-# Ligues hors-saison-européenne : on force la saison API-Football
-# (one-off tournaments + calendrier civil pour Amériques)
-_CALENDAR_YEAR_LEAGUES = {
-    "soccer_brazil_campeonato",
-    "soccer_argentina_primera_division",
-    "soccer_mexico_ligamx",
-    "soccer_conmebol_copa_libertadores",
-    "soccer_conmebol_copa_sudamericana",
-}
-
-# Tournois ponctuels : saison = année de l'édition
-_TOURNAMENT_SEASONS = {
-    "soccer_fifa_world_cup": 2026,  # Mondial USA/Canada/Mexique — édition 2026
-}
-
-
 def _season_for(sport_key: str | None = None) -> int:
     """
-    Saison API-Football à utiliser pour un sport_key donné :
-      - Tournoi ponctuel (Mondial) → année de l'édition
-      - Ligue calendrier civil (Brésil, Argentine, Mexique) → année courante
-      - Sinon (ligues européennes) → année de début de saison (août→mai)
+    Saison API-Football à utiliser pour un sport_key donné.
+    Toutes les compétitions suivies étant européennes, on renvoie la
+    saison de début (août→mai). Le paramètre `sport_key` est conservé
+    pour laisser la porte ouverte à d'éventuelles exceptions futures.
     """
-    if sport_key and sport_key in _TOURNAMENT_SEASONS:
-        return _TOURNAMENT_SEASONS[sport_key]
-    today = date.today()
-    if sport_key and sport_key in _CALENDAR_YEAR_LEAGUES:
-        return today.year
     return _european_season()
 
-# Correspondance compétition → league_id API-Football
+# Correspondance compétition → league_id API-Football (Europe uniquement)
 LEAGUE_IDS = {
-    "soccer_fifa_world_cup": 1,
     "soccer_epl": 39,
     "soccer_spain_la_liga": 140,
     "soccer_italy_serie_a": 135,
@@ -129,11 +107,6 @@ LEAGUE_IDS = {
     "soccer_portugal_primeira_liga": 94,
     "soccer_turkey_super_lig": 203,
     "soccer_belgium_first_div": 144,
-    "soccer_conmebol_copa_libertadores": 13,
-    "soccer_conmebol_copa_sudamericana": 11,
-    "soccer_brazil_campeonato": 71,
-    "soccer_argentina_primera_division": 128,
-    "soccer_mexico_ligamx": 262,
 }
 
 

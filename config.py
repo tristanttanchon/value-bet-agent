@@ -43,10 +43,8 @@ MIN_STAKE = 0.10            # Mise minimale 10 centimes
 # Scheduler
 ANALYSIS_HOUR = 12
 
-# Compétitions suivies (clés The Odds API)
+# Compétitions suivies (clés The Odds API) — EUROPE UNIQUEMENT
 COMPETITION_KEYS = [
-    # Compétitions internationales majeures
-    "soccer_fifa_world_cup",
     # Ligues européennes majeures
     "soccer_epl",
     "soccer_spain_la_liga",
@@ -69,18 +67,11 @@ COMPETITION_KEYS = [
     "soccer_portugal_primeira_liga",
     "soccer_turkey_super_lig",
     "soccer_belgium_first_div",
-    # Amériques
-    "soccer_conmebol_copa_libertadores",
-    "soccer_conmebol_copa_sudamericana",
-    "soccer_brazil_campeonato",
-    "soccer_argentina_primera_division",
-    "soccer_mexico_ligamx",
 ]
 
 # Compétitions "premium" : on récupère en plus Over/Under 2.5 et BTTS
-# (3× plus de crédits API pour ces 6 → plus d'opportunités de value)
+# (3× plus de crédits API pour ces 5 → plus d'opportunités de value)
 PREMIUM_COMPETITIONS = {
-    "soccer_fifa_world_cup",
     "soccer_epl",
     "soccer_spain_la_liga",
     "soccer_italy_serie_a",
@@ -89,8 +80,6 @@ PREMIUM_COMPETITIONS = {
 }
 
 COMPETITION_NAMES = {
-    # Compétitions internationales
-    "soccer_fifa_world_cup": "Coupe du Monde",
     # Ligues européennes majeures
     "soccer_epl": "Premier League",
     "soccer_spain_la_liga": "La Liga",
@@ -113,10 +102,4 @@ COMPETITION_NAMES = {
     "soccer_portugal_primeira_liga": "Liga Portugal",
     "soccer_turkey_super_lig": "Süper Lig",
     "soccer_belgium_first_div": "Jupiler Pro League",
-    # Amériques
-    "soccer_conmebol_copa_libertadores": "Copa Libertadores",
-    "soccer_conmebol_copa_sudamericana": "Copa Sudamericana",
-    "soccer_brazil_campeonato": "Brasileirao",
-    "soccer_argentina_primera_division": "Primera División Argentine",
-    "soccer_mexico_ligamx": "Liga MX",
 }
