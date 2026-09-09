@@ -1,0 +1,44 @@
+name: Keepalive — Supabase + GitHub activity
+
+# Lundi et Jeudi 12h UTC = 14h CEST.
+# Gap max entre 2 pings ≤ 4 jours → jamais au-delà du seuil 7j de Supabase.
+# Chaque run fait aussi un commit vide → reset du chrono 60j de GitHub Actions.
+on:
+  schedule:
+    - cron: '0 12 * * 1,4'
+  workflow_dispatch:
+
+# Le job doit pouvoir push le commit vide
+permissions:
+  contents: write
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Nécessaire pour push depuis le job
+          persist-credentials: true
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Ping Supabase (empêche l'auto-pause 7j)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python keepalive.py
+
+      - name: Empty commit (empêche la désactivation workflow 60j)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: keep-alive ping [skip ci]"
+          git push
