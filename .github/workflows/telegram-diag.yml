@@ -1,0 +1,43 @@
+name: Telegram Diagnostic
+on:
+  # Se lance tout seul dès qu'on push le script (utile pour debug)
+  push:
+    branches: [main]
+    paths:
+      - telegram_diag.py
+      - .github/workflows/telegram-diag.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install
+        run: pip install requests
+
+      - name: Run diagnostic
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python telegram_diag.py
+
+      - name: Commit diagnostic file
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add TELEGRAM_DIAGNOSTIC.md
+          git commit -m "chore: telegram diagnostic [skip ci]" || echo "no changes"
+          git push
